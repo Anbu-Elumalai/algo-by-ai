@@ -8,6 +8,8 @@ import {
 } from "routing-controllers";
 import { StatusCodes } from "http-status-codes";
 import axios from "axios";
+import fs from "fs";
+import path from "path";
 import { TradingLoopService } from "../services/tradingLoop.service";
 import { BacktestingService } from "../services/backtesting.service";
 import { UpstoxService } from "../services/upstox.service";
@@ -141,6 +143,20 @@ export class TradingController {
   }
 
   /**
+   * Generates the Upstox OAuth Login URL and redirects the user
+   */
+  @Get("/upstox/login")
+  async redirectToUpstoxLogin(@Res() res: any) {
+    try {
+      const authUrl = `https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id=${upstoxConfig.apiKey}&redirect_uri=${encodeURIComponent(upstoxConfig.redirectUri)}`;
+      console.log(`🔗 Redirecting user to Upstox OAuth login: ${authUrl}`);
+      return res.redirect(authUrl);
+    } catch (error: any) {
+      return handleErrorResponse(error, res);
+    }
+  }
+
+  /**
    * Upstox OAuth Authorization callback endpoint
    * Ex-changes redirect authorization code for access token
    */
@@ -175,12 +191,62 @@ export class TradingController {
       );
 
       const tokenData = response.data;
-      
+      const newAccessToken = tokenData.access_token;
+
+      // 1. Update the token in memory so active services pick it up instantly
+      upstoxConfig.accessToken = newAccessToken;
+      console.log("🔄 Upstox access token successfully updated in-memory!");
+
+      // 2. Persist the new token to the local .env file
+      let envUpdated = false;
+      try {
+        const envPath = path.resolve(process.cwd(), ".env");
+        if (fs.existsSync(envPath)) {
+          let envContent = fs.readFileSync(envPath, "utf-8");
+          if (envContent.includes("UPSTOX_ACCESS_TOKEN=")) {
+            // Replace the existing token line
+            envContent = envContent.replace(
+              /UPSTOX_ACCESS_TOKEN\s*=\s*["']?[^\n\r"']+["']?/,
+              `UPSTOX_ACCESS_TOKEN="${newAccessToken}"`
+            );
+          } else {
+            // Append the token config line if it didn't exist
+            envContent += `\nUPSTOX_ACCESS_TOKEN="${newAccessToken}"\n`;
+          }
+          fs.writeFileSync(envPath, envContent, "utf-8");
+          console.log("💾 Automatically updated UPSTOX_ACCESS_TOKEN inside .env file!");
+          envUpdated = true;
+        } else {
+          console.warn("⚠️ .env file not found at path:", envPath);
+        }
+      } catch (err: any) {
+        console.error("❌ Failed to automatically update .env file with new token:", err.message);
+      }
+
+      // 3. Restart the live trading bot asynchronously to apply the new credentials
+      let botRestartMsg = "";
+      try {
+        console.log("🔄 Dynamically restarting Upstox Live Trading bot...");
+        if (TradingLoopService.getStatus().isActive) {
+          TradingLoopService.stop();
+        }
+        
+        TradingLoopService.start().then(() => {
+          console.log("🤖 Live trading bot successfully restarted and active with new credentials!");
+        }).catch((err) => {
+          console.error("❌ Failed to asynchronously restart live trading bot:", err.message);
+        });
+        botRestartMsg = " The live trading bot has also been dynamically restarted and is now polling with new credentials.";
+      } catch (err: any) {
+        console.error("❌ Error initiating bot restart:", err.message);
+        botRestartMsg = ` However, the bot failed to restart automatically: ${err.message}`;
+      }
+
       return res.status(StatusCodes.OK).json({
         success: true,
-        message: "Successfully exchanged authorization code for Upstox access token! Copy the token and save it to your .env file as UPSTOX_ACCESS_TOKEN.",
+        message: `Successfully exchanged authorization code for Upstox access token!${envUpdated ? " Your .env file was automatically updated." : ""}${botRestartMsg}`,
         data: {
-          accessToken: tokenData.access_token,
+          accessToken: newAccessToken,
           userName: tokenData.user_name,
           email: tokenData.email
         }

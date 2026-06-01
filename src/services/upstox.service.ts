@@ -56,7 +56,13 @@ export class UpstoxService {
         buyingPower: parseFloat(data.available_margin || 100000) * 5, // 5x leverage for Intraday stocks
       };
     } catch (error: any) {
-      console.error("❌ Error fetching Upstox account margin:", error.response?.data || error.message);
+      const isAuthError = error.response?.status === 401 || 
+                          error.response?.data?.errors?.[0]?.errorCode === "UDAPI100050";
+      if (isAuthError) {
+        console.error("🔑 Upstox Access Token is expired or invalid. Please visit http://localhost:4000/api/trading/upstox/login in your browser to re-authenticate and refresh it!");
+      } else {
+        console.error("❌ Error fetching Upstox account margin:", error.response?.data || error.message);
+      }
       // Return simulated backup account details for testing if authorization is not fully loaded yet
       return {
         equity: 100000,
@@ -212,7 +218,13 @@ export class UpstoxService {
       const key = Object.keys(ltpData)[0];
       return parseFloat(ltpData[key]?.last_price || 0);
     } catch (error: any) {
-      console.error(`❌ Error getting LTP for ${symbol}:`, error.response?.data || error.message);
+      const isAuthError = error.response?.status === 401 || 
+                          error.response?.data?.errors?.[0]?.errorCode === "UDAPI100050";
+      if (isAuthError) {
+        console.error(`🔑 Upstox Access Token is expired or invalid. Please visit http://localhost:4000/api/trading/upstox/login in your browser to re-authenticate and refresh it!`);
+      } else {
+        console.error(`❌ Error getting LTP for ${symbol}:`, error.response?.data || error.message);
+      }
       throw error;
     }
   }

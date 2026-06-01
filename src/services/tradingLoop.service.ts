@@ -105,6 +105,19 @@ export class TradingLoopService {
   private static async executeTick() {
     if (!this.isActive) return;
 
+    // Fetch account details and all open positions ONCE per tick (reduces API calls by 50%+)
+    let account;
+    let positions: UpstoxPosition[] = [];
+    try {
+      account = await UpstoxService.getAccount();
+      positions = await UpstoxService.getPositions();
+    } catch (err: any) {
+      console.error("❌ Error fetching Upstox account status/positions on tick:", err.message);
+      // Fallback to avoid stopping the loop
+      account = { equity: 100000, cash: 100000, buyingPower: 500000 };
+      positions = [];
+    }
+
     for (const symbol of this.targetSymbols) {
       try {
         // A. Fetch current stock price (LTP)
@@ -123,9 +136,8 @@ export class TradingLoopService {
         }
         this.priceHistory.set(symbol, prices);
 
-        // C. Query account details and holdings
-        const account = await UpstoxService.getAccount();
-        const position = await UpstoxService.getPosition(symbol);
+        // Find existing position for this symbol from pre-fetched positions
+        const position = positions.find(p => p.symbol.toUpperCase() === symbol.toUpperCase()) || null;
 
         // D. Risk Check: Enforce Stop-Loss if we hold this stock
         if (position) {
