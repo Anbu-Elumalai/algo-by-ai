@@ -150,7 +150,8 @@ export class TradingController {
     try {
       const authUrl = `https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id=${upstoxConfig.apiKey}&redirect_uri=${encodeURIComponent(upstoxConfig.redirectUri)}`;
       console.log(`🔗 Redirecting user to Upstox OAuth login: ${authUrl}`);
-      return res.redirect(authUrl);
+      res.redirect(authUrl);
+      return res;
     } catch (error: any) {
       return handleErrorResponse(error, res);
     }
