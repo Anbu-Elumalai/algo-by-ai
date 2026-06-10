@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package com.upstox.marketdatafeeder.rpc.proto;
+
+message FeedResponse {
+  enum Type {
+    initial_feed = 0;
+    live_feed = 1;
+  }
+  Type type = 1;
+  map<string, Feed> feeds = 2;
+}
+
+message Feed {
+  oneof FeedData {
+    LTPC ltpc = 1;
+    FullFeed fullFeed = 2;
+  }
+}
+
+message LTPC {
+  double ltp = 1; // Last Traded Price
+  int64 ltt = 2; // Last Traded Time
+  double ltq = 3; // Last Traded Quantity
+  double cp = 4; // Close Price
+}
+
+message FullFeed {
+  LTPC ltpc = 1;
+}

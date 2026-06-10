@@ -1,22 +1,28 @@
 import { Entity, ObjectIdColumn, Column, CreateDateColumn } from "typeorm";
 import { ObjectId } from "mongodb";
 
-@Entity("bot_performances")
-export class BotPerformance {
+@Entity("strategy_decisions")
+export class StrategyDecision {
   @ObjectIdColumn()
     _id!: ObjectId;
 
   @Column()
-    equity!: number;
+    symbol!: string;
 
   @Column()
-    cash!: number;
+    fastSma!: number;
 
   @Column()
-    buyingPower!: number;
+    slowSma!: number;
 
   @Column()
-    unrealizedPl!: number;
+    rsi!: number;
+
+  @Column()
+    signal!: "BUY" | "SELL" | "HOLD";
+
+  @Column()
+    reason!: string;
 
   @CreateDateColumn()
     createdAt!: Date;

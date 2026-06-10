@@ -1,5 +1,9 @@
 import axios from "axios";
 import { upstoxConfig } from "../config/upstox";
+import { HealthService } from "./health.service";
+import { AppDataSource } from "../data-source";
+import { TradeLog } from "../entity/TradeLog";
+import { ActivePosition } from "../entity/ActivePosition";
 
 export interface UpstoxAccount {
   equity: number;
@@ -15,15 +19,6 @@ export interface UpstoxPosition {
   unrealizedPl: number;
 }
 
-export interface UpstoxBar {
-  t: string; // timestamp
-  o: number; // open
-  h: number; // high
-  l: number; // low
-  c: number; // close
-  v: number; // volume
-}
-
 export class UpstoxService {
   private static getHeaders() {
     return {
@@ -33,42 +28,92 @@ export class UpstoxService {
     };
   }
 
+  private static verifyCircuit() {
+    if (!HealthService.isTradingAllowed()) {
+      throw new Error("❌ API Execution Halted: The Circuit Breaker is OPEN due to repeated API failures.");
+    }
+  }
+
+  /**
+   * Helper to calculate running paper trading account balances from MongoDB logs
+   */
+  static async getPaperAccount(): Promise<UpstoxAccount> {
+    try {
+      const tradeRepo = AppDataSource.getRepository(TradeLog);
+      const positionRepo = AppDataSource.getRepository(ActivePosition);
+
+      const logs = await tradeRepo.find();
+      let cash = 100000.0; // Starting capital
+
+      for (const log of logs) {
+        if (log.action === "BUY") {
+          cash -= (log.totalAmount + (log.transactionFees || 40));
+        } else if (log.action === "SELL") {
+          cash += (log.totalAmount - (log.transactionFees || 40));
+        }
+      }
+
+      const openPositions = await positionRepo.find();
+      let openValue = 0;
+      for (const pos of openPositions) {
+        let currentPrice = pos.avgEntryPrice;
+        try {
+          currentPrice = await this.getLastTradedPrice(pos.symbol);
+        } catch {
+          // Keep avgEntryPrice as fallback
+        }
+        openValue += pos.qty * currentPrice;
+      }
+
+      return {
+        equity: cash + openValue,
+        cash: cash,
+        buyingPower: cash * 5,
+      };
+    } catch (err: any) {
+      console.warn("⚠️ Failed to calculate paper account balance, returning static fallback:", err.message);
+      return { equity: 100000, cash: 100000, buyingPower: 500000 };
+    }
+  }
+
   /**
    * Fetch current account margin and funds balance
    */
   static async getAccount(): Promise<UpstoxAccount> {
+    this.verifyCircuit();
+
+    // Intercept if in PAPER trading mode
+    if (process.env.TRADING_MODE === "PAPER") {
+      return this.getPaperAccount();
+    }
+
     try {
       if (!upstoxConfig.accessToken) {
-        throw new Error("No Upstox Access Token provided inside .env! Please configure UPSTOX_ACCESS_TOKEN.");
+        throw new Error("No Upstox Access Token provided! Please authenticate.");
       }
 
-      // Segment=SEC means Securities (Stocks) segment
       const response = await axios.get(
         `${upstoxConfig.baseUrl}/user/get-funds-and-margin?segment=SEC`,
         { headers: this.getHeaders() }
       );
 
-      const data = response.data?.data?.equity || {};
-      
-      return {
-        equity: parseFloat(data.utilised_margin || 0) + parseFloat(data.available_margin || 100000), // Fallback to 100k play money for demo if zero
-        cash: parseFloat(data.available_margin || 100000),
-        buyingPower: parseFloat(data.available_margin || 100000) * 5, // 5x leverage for Intraday stocks
-      };
-    } catch (error: any) {
-      const isAuthError = error.response?.status === 401 || 
-                          error.response?.data?.errors?.[0]?.errorCode === "UDAPI100050";
-      if (isAuthError) {
-        console.error("🔑 Upstox Access Token is expired or invalid. Please visit http://localhost:4000/api/trading/upstox/login in your browser to re-authenticate and refresh it!");
-      } else {
-        console.error("❌ Error fetching Upstox account margin:", error.response?.data || error.message);
+      const data = response.data?.data?.equity;
+      if (!data) {
+        throw new Error("Invalid response schema returned from Upstox Margin API.");
       }
-      // Return simulated backup account details for testing if authorization is not fully loaded yet
-      return {
-        equity: 100000,
-        cash: 100000,
-        buyingPower: 500000,
+
+      const account: UpstoxAccount = {
+        equity: parseFloat(data.utilised_margin || 0) + parseFloat(data.available_margin || 0),
+        cash: parseFloat(data.available_margin || 0),
+        buyingPower: parseFloat(data.available_margin || 0) * 5,
       };
+
+      await HealthService.reportSuccess();
+      return account;
+    } catch (error: any) {
+      const errorMsg = error.response?.data ? JSON.stringify(error.response.data) : error.message;
+      await HealthService.reportFailure("UpstoxService.getAccount", errorMsg, error.stack);
+      throw error;
     }
   }
 
@@ -76,8 +121,42 @@ export class UpstoxService {
    * Fetch active intraday/delivery holdings
    */
   static async getPositions(): Promise<UpstoxPosition[]> {
+    this.verifyCircuit();
+
+    // In paper trading mode, positions are fetched from the database ActivePosition collection cache
+    if (process.env.TRADING_MODE === "PAPER") {
+      try {
+        const repo = AppDataSource.getRepository(ActivePosition);
+        const openPositions = await repo.find();
+
+        const formatted: UpstoxPosition[] = [];
+        for (const pos of openPositions) {
+          let currentPrice = pos.avgEntryPrice;
+          try {
+            currentPrice = await this.getLastTradedPrice(pos.symbol);
+          } catch {
+            // Keep average entry
+          }
+          const unrealized = (currentPrice - pos.avgEntryPrice) * pos.qty;
+          formatted.push({
+            symbol: pos.symbol,
+            qty: pos.qty,
+            avgEntryPrice: pos.avgEntryPrice,
+            currentPrice: currentPrice,
+            unrealizedPl: unrealized,
+          });
+        }
+        return formatted;
+      } catch (err: any) {
+        console.error("❌ Failed to fetch paper positions from DB:", err.message);
+        return [];
+      }
+    }
+
     try {
-      if (!upstoxConfig.accessToken) return [];
+      if (!upstoxConfig.accessToken) {
+        throw new Error("No Upstox Access Token provided! Please authenticate.");
+      }
 
       const response = await axios.get(
         `${upstoxConfig.baseUrl}/portfolio/short-term-positions`,
@@ -85,17 +164,20 @@ export class UpstoxService {
       );
 
       const positions = response.data?.data || [];
-      
-      return positions.map((pos: any) => ({
+      const formatted: UpstoxPosition[] = positions.map((pos: any) => ({
         symbol: pos.trading_symbol,
         qty: parseInt(pos.quantity || 0),
         avgEntryPrice: parseFloat(pos.average_price || 0),
         currentPrice: parseFloat(pos.last_price || 0),
         unrealizedPl: parseFloat(pos.pnl || 0),
       }));
+
+      await HealthService.reportSuccess();
+      return formatted;
     } catch (error: any) {
-      console.error("❌ Error fetching Upstox positions:", error.response?.data || error.message);
-      return [];
+      const errorMsg = error.response?.data ? JSON.stringify(error.response.data) : error.message;
+      await HealthService.reportFailure("UpstoxService.getPositions", errorMsg, error.stack);
+      throw error;
     }
   }
 
@@ -118,12 +200,25 @@ export class UpstoxService {
     orderType: "MARKET" | "LIMIT" = "MARKET",
     price?: number
   ): Promise<any> {
+    this.verifyCircuit();
+
+    // Intercept if in PAPER trading mode
+    if (process.env.TRADING_MODE === "PAPER") {
+      console.log(`📝 [PAPER TRADE] Simulating ${side} order: ${qty} shares of ${symbol}`);
+      const mockOrderId = `paper-order-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      return {
+        order_id: mockOrderId,
+        status: "success",
+        message: "Paper order filled successfully."
+      };
+    }
+
     try {
       const instrumentToken = upstoxConfig.getInstrumentToken(symbol);
 
       const body = {
         quantity: qty,
-        product: "I", // "I" represents Intraday Product Type
+        product: "I",
         validity: "DAY",
         price: orderType === "LIMIT" ? price : 0,
         instrument_token: instrumentToken,
@@ -134,18 +229,21 @@ export class UpstoxService {
         is_amo: false,
       };
 
-      console.log(`📡 Sending ${side} order: ${qty} shares of ${symbol} (${orderType}) to Upstox`);
-      
+      console.log(`📡 Dispatching ${side} order: ${qty} shares of ${symbol} (${orderType}) to Upstox`);
+
       const response = await axios.post(
         `${upstoxConfig.baseUrl}/order/place`,
         body,
         { headers: this.getHeaders() }
       );
 
-      return response.data?.data || response.data;
+      const data = response.data?.data || response.data;
+      await HealthService.reportSuccess();
+      return data;
     } catch (error: any) {
-      console.error(`❌ Error placing order for ${symbol} on Upstox:`, error.response?.data || error.message);
-      throw new Error(`Upstox Order Failed: ${JSON.stringify(error.response?.data || error.message)}`);
+      const errorMsg = error.response?.data ? JSON.stringify(error.response.data) : error.message;
+      await HealthService.reportFailure("UpstoxService.placeOrder", errorMsg, error.stack);
+      throw error;
     }
   }
 
@@ -155,55 +253,50 @@ export class UpstoxService {
   static async getHistoricalBars(
     symbol: string,
     days: number = 30,
-    interval: "1minute" | "30minute" | "day" = "day"
-  ): Promise<UpstoxBar[]> {
+    interval: "1minute" | "15minute" | "day" = "day"
+  ): Promise<any[]> {
+    this.verifyCircuit();
     try {
       const instrumentToken = upstoxConfig.getInstrumentToken(symbol);
       const toDate = new Date();
       const fromDate = new Date();
       fromDate.setDate(toDate.getDate() - days);
 
-      const toStr = toDate.toISOString().split("T")[0]; // YYYY-MM-DD
+      const toStr = toDate.toISOString().split("T")[0];
       const fromStr = fromDate.toISOString().split("T")[0];
 
-      // End-point: /historical-candle/{instrumentKey}/{interval}/{toDate}/{fromDate}
-      const response = await axios.get(
-        `${upstoxConfig.baseUrl}/historical-candle/${encodeURIComponent(instrumentToken)}/${interval}/${toStr}/${fromStr}`,
-        {
-          headers: {
-            "Accept": "application/json",
-          }
-        }
-      );
+      const intervalPath = interval === "day" ? "day" : interval === "15minute" ? "minutes/15" : "1minute";
+
+      const url = `https://api.upstox.com/v3/historical-candle/${encodeURIComponent(instrumentToken)}/${intervalPath}/${toStr}/${fromStr}`;
+      const response = await axios.get(url, { headers: { "Accept": "application/json" } });
 
       const candles = response.data?.data?.candles || [];
-      
-      // Upstox candles list: [ [timestamp, open, high, low, close, volume, open_interest], ... ]
-      // Returned oldest to newest
-      const formattedBars: UpstoxBar[] = candles.map((c: any) => ({
+      const formatted = candles.map((c: any) => ({
         t: c[0],
         o: parseFloat(c[1]),
         h: parseFloat(c[2]),
         l: parseFloat(c[3]),
         c: parseFloat(c[4]),
         v: parseInt(c[5] || 0),
-      })).reverse(); // Reverse so array is in chronological order (oldest to newest)
+      })).reverse();
 
-      return formattedBars;
+      await HealthService.reportSuccess();
+      return formatted;
     } catch (error: any) {
-      console.error(`❌ Error fetching Upstox historical bars for ${symbol}:`, error.response?.data || error.message);
-      return [];
+      const errorMsg = error.response?.data ? JSON.stringify(error.response.data) : error.message;
+      await HealthService.reportFailure("UpstoxService.getHistoricalBars", errorMsg, error.stack);
+      throw error;
     }
   }
 
   /**
-   * Helper REST API to fetch the Last Traded Price (LTP) of a stock
-   * Extremely simple, stable, and highly robust for 1-minute live loops!
+   * Fetch the Last Traded Price (LTP) of a stock
    */
   static async getLastTradedPrice(symbol: string): Promise<number> {
+    this.verifyCircuit();
     try {
       const instrumentToken = upstoxConfig.getInstrumentToken(symbol);
-      
+
       const response = await axios.get(
         `${upstoxConfig.baseUrl}/market-quote/ltp`,
         {
@@ -216,15 +309,13 @@ export class UpstoxService {
 
       const ltpData = response.data?.data || {};
       const key = Object.keys(ltpData)[0];
-      return parseFloat(ltpData[key]?.last_price || 0);
+      const ltp = parseFloat(ltpData[key]?.last_price || 0);
+
+      await HealthService.reportSuccess();
+      return ltp;
     } catch (error: any) {
-      const isAuthError = error.response?.status === 401 || 
-                          error.response?.data?.errors?.[0]?.errorCode === "UDAPI100050";
-      if (isAuthError) {
-        console.error(`🔑 Upstox Access Token is expired or invalid. Please visit http://localhost:4000/api/trading/upstox/login in your browser to re-authenticate and refresh it!`);
-      } else {
-        console.error(`❌ Error getting LTP for ${symbol}:`, error.response?.data || error.message);
-      }
+      const errorMsg = error.response?.data ? JSON.stringify(error.response.data) : error.message;
+      await HealthService.reportFailure("UpstoxService.getLastTradedPrice", errorMsg, error.stack);
       throw error;
     }
   }

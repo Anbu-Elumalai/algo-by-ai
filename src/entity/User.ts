@@ -1,22 +1,19 @@
 import { Entity, ObjectIdColumn, Column, CreateDateColumn } from "typeorm";
 import { ObjectId } from "mongodb";
 
-@Entity("bot_performances")
-export class BotPerformance {
+@Entity("users")
+export class User {
   @ObjectIdColumn()
     _id!: ObjectId;
 
   @Column()
-    equity!: number;
+    username!: string;
 
   @Column()
-    cash!: number;
+    password!: string; // Hashed password
 
   @Column()
-    buyingPower!: number;
-
-  @Column()
-    unrealizedPl!: number;
+    role!: "admin" | "viewer";
 
   @CreateDateColumn()
     createdAt!: Date;

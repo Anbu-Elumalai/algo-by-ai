@@ -1,22 +1,22 @@
 import { Entity, ObjectIdColumn, Column, CreateDateColumn } from "typeorm";
 import { ObjectId } from "mongodb";
 
-@Entity("bot_performances")
-export class BotPerformance {
+@Entity("error_logs")
+export class ErrorLog {
   @ObjectIdColumn()
     _id!: ObjectId;
 
   @Column()
-    equity!: number;
+    context!: string; // Where the error happened (e.g., "UpstoxService", "TradingLoop")
 
   @Column()
-    cash!: number;
+    message!: string;
 
   @Column()
-    buyingPower!: number;
+    stack?: string;
 
   @Column()
-    unrealizedPl!: number;
+    severity!: "INFO" | "WARNING" | "ERROR" | "CRITICAL";
 
   @CreateDateColumn()
     createdAt!: Date;

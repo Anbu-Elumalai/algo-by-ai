@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: 'hr-management-backend',
+      name: 'algo-trading-bot',
       script: 'src/index.ts',
       interpreter: 'node',
       exec_mode: 'fork',

@@ -1,278 +1,471 @@
-import { UpstoxService, UpstoxPosition } from "./upstox.service";
-import { analyzeMovingAverageCrossover } from "../strategies/movingAverageCrossover";
+import { UpstoxService } from "./upstox.service";
+import { CandleService } from "./candle.service";
 import { RiskService } from "./risk.service";
+import { PositionGuardService } from "./positionGuard.service";
+import { NotificationService } from "./notification.service";
+import { PreLiveValidationService } from "./preLiveValidation.service";
+import { marketDataService } from "./marketData.service";
+import { analyzeMovingAverageCrossover } from "../strategies/strategyEngine";
+import { tradingTickMutex } from "../utils/mutex";
 import { TradeLog } from "../entity/TradeLog";
 import { BotPerformance } from "../entity/BotPerformance";
+import { ActivePosition } from "../entity/ActivePosition";
+import { StrategyDecision } from "../entity/StrategyDecision";
+import { ExecutionLog } from "../entity/ExecutionLog";
 import { AppDataSource } from "../data-source";
 
 export class TradingLoopService {
   private static isActive = false;
   private static intervalId: NodeJS.Timeout | null = null;
-  private static targetSymbols: string[] = ["RELIANCE", "TCS"];
-  
-  // Store closing prices in memory for each symbol
-  private static priceHistory: Map<string, number[]> = new Map();
+  private static healthLogIntervalId: NodeJS.Timeout | null = null;
+  private static targetSymbols: string[] = ["RELIANCE", "TCS", "INFY"];
 
   /**
-   * Status check of the bot
+   * Check if Indian market is open (09:15 to 15:30 IST, Monday-Friday)
    */
+  static isIndianMarketOpen(): boolean {
+    const now = new Date();
+    // Convert to Indian Standard Time (IST: UTC+5:30)
+    const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+    const ist = new Date(utc + 3600000 * 5.5);
+
+    const day = ist.getDay(); // 0 = Sunday, 6 = Saturday
+    if (day === 0 || day === 6) return false;
+
+    const hours = ist.getHours();
+    const minutes = ist.getMinutes();
+    const timeVal = hours * 100 + minutes;
+
+    return timeVal >= 915 && timeVal <= 1530;
+  }
+
   static getStatus() {
     return {
       isActive: this.isActive,
       symbols: this.targetSymbols,
-      cachedBars: Array.from(this.priceHistory.entries()).map(([sym, prices]) => ({
-        symbol: sym,
-        barCount: prices.length,
-      })),
+      isMarketOpen: this.isIndianMarketOpen(),
+      ws: marketDataService.healthCheck()
     };
   }
 
   /**
-   * Starts the live trading bot using robust LTP polling
+   * Start the live loop with validations and state recovery
    */
   static async start(): Promise<void> {
     if (this.isActive) {
-      console.log("⚠️ Upstox Trading Bot is already running!");
+      console.log("⚠️ Trading Loop is already active!");
       return;
     }
 
-    console.log("🚀 Starting the Upstox Algorithmic Trading Bot...");
-    this.isActive = true;
-
     try {
-      // 1. Validate Upstox API access
-      const account = await UpstoxService.getAccount();
-      console.log(`🏦 Connected to Upstox Account | Current Account Equity: ₹${account.equity.toFixed(2)} | Available Cash: ₹${account.cash.toFixed(2)}`);
-
-      // 2. Bootstrap sliding window: download historical bars to pre-initialize indicators
-      for (const symbol of this.targetSymbols) {
-        console.log(`📥 Bootstrapping indicators for ${symbol}...`);
-        const historicalBars = await UpstoxService.getHistoricalBars(symbol, 45, "day");
-        const closes = historicalBars.map(b => b.c);
-        
-        // Retain only the last 30 daily closes to populate the sliding window
-        const slidingWindow = closes.slice(-30);
-        this.priceHistory.set(symbol, slidingWindow);
-        console.log(`🎯 Bootstrapped ${slidingWindow.length} historical prices for ${symbol}. Ready for live polling.`);
+      // 1. Run Pre-Live Checklist
+      const checklist = await PreLiveValidationService.runChecklist(this.targetSymbols);
+      if (!checklist.success) {
+        throw new Error("Pre-Live Validation Checklist failed. Trading bot startup aborted.");
       }
 
-      // 3. Save initial performance snapshot to DB
-      await this.logPerformanceSnapshot(account.equity, account.cash, account.buyingPower, 0);
+      this.isActive = true;
+      console.log("🚀 Pre-Live checks passed. Starting live trading operations...");
 
-      // 4. Start Live Polling Loop (polls LTP every 60 seconds)
-      console.log("⏱️ Live Indian Market Loop initialized. Polling stock LTP every 60 seconds...");
-      
-      // Execute first tick immediately
-      await this.executeTick();
-      
+      // 2. Disaster Recovery: Restore database-backed states
+      await this.recoverState();
+
+      // 3. Connect WebSocket Price Stream Listeners
+      marketDataService.removeAllListeners("priceUpdate");
+      marketDataService.on("priceUpdate", async ({ symbol, ltp }) => {
+        await this.processRealtimePriceUpdate(symbol, ltp);
+      });
+
+      // 4. Start Live Polling (strategy candle checks)
       this.intervalId = setInterval(async () => {
         await this.executeTick();
-      }, 60000); // 60,000ms = 1 minute
+      }, 60000);
 
-      console.log("⚡ Upstox Trading Bot is fully operational!");
+      // 5. Start Telemetry Logger (every 5 minutes)
+      this.healthLogIntervalId = setInterval(async () => {
+        await this.logSystemTelemetry();
+      }, 300000);
+
+      await NotificationService.sendNotification("BOT STARTED", "Trading bot has successfully started and is monitoring price streams.");
     } catch (err: any) {
       this.isActive = false;
-      if (this.intervalId) {
-        clearInterval(this.intervalId);
-        this.intervalId = null;
-      }
-      console.error("❌ Failed to start Upstox Trading Bot:", err.message);
+      this.stop();
+      console.error("❌ Startup execution failed:", err.message);
       throw err;
     }
   }
 
   /**
-   * Stops the live trading bot
+   * Stop the live loop
    */
   static stop(): void {
-    if (!this.isActive) {
-      console.log("⚠️ Upstox Trading Bot is already offline.");
-      return;
-    }
+    if (!this.isActive) return;
+    console.log("🛑 Stopping the trading loop...");
 
-    console.log("🛑 Stopping the Upstox Algorithmic Trading Bot...");
     if (this.intervalId) {
       clearInterval(this.intervalId);
       this.intervalId = null;
     }
+    if (this.healthLogIntervalId) {
+      clearInterval(this.healthLogIntervalId);
+      this.healthLogIntervalId = null;
+    }
+
     this.isActive = false;
-    console.log("🔌 Upstox Bot is offline.");
+    marketDataService.removeAllListeners("priceUpdate");
+    console.log("🔌 Trading loop and telemetry deactivated.");
   }
 
   /**
-   * Executes a single polling tick across all symbols
+   * Disaster Recovery: Re-load dynamic variables and active positions on boot
+   */
+  private static async recoverState(): Promise<void> {
+    console.log("🏥 Restoring active system state from database...");
+    try {
+      const positionRepo = AppDataSource.getRepository(ActivePosition);
+      const openPositions = await positionRepo.find();
+
+      console.log(`🏥 Restored ${openPositions.length} active positions from database cache:`);
+      for (const pos of openPositions) {
+        console.log(`   - ${pos.symbol}: Peak price ₹${pos.peakPrice} | SL price ₹${pos.trailingStopPrice} | Qty ${pos.qty}`);
+      }
+
+      const account = await UpstoxService.getAccount();
+      await RiskService.getDailyTracker(account.equity);
+      console.log("🏥 Risk limits and account balances successfully synchronized.");
+    } catch (err: any) {
+      console.error("⚠️ State recovery alert:", err.message);
+    }
+  }
+
+  /**
+   * Dynamic Trailing Stop Loss evaluator checking incoming WebSocket price ticks in real-time
+   */
+  private static async processRealtimePriceUpdate(symbol: string, ltp: number) {
+    if (!this.isActive) return;
+
+    const release = await tradingTickMutex.acquire();
+    try {
+      const positionRepo = AppDataSource.getRepository(ActivePosition);
+      const dbPos = await positionRepo.findOne({ where: { symbol } as any });
+
+      if (dbPos && ltp > 0) {
+        const slResult = RiskService.checkTrailingStopLoss(dbPos, ltp);
+
+        // Update peak price and trailing stop price in database
+        dbPos.peakPrice = slResult.updatedPeak;
+        dbPos.trailingStopPrice = slResult.trailingStop;
+        await positionRepo.save(dbPos);
+
+        if (slResult.trigger) {
+          console.warn(`🚨 [Stop Loss Triggered] Trailing SL breached for ${symbol} via WS tick. Price: ₹${ltp.toFixed(2)}`);
+
+          // Verify guard
+          const guard = await PositionGuardService.verifyOrderAllowed(symbol, "SELL");
+          if (!guard.allowed) {
+            console.error(`🛑 PositionGuard rejected SL order: ${guard.reason}`);
+            return;
+          }
+
+          const order = await UpstoxService.placeOrder(symbol, dbPos.qty, "SELL", "MARKET");
+          const account = await UpstoxService.getAccount();
+          const totalAmount = dbPos.qty * ltp;
+          const fees = 40; // Approx trade fee
+
+          // Log completed trade
+          const log = new TradeLog();
+          log.symbol = symbol;
+          log.action = "SELL";
+          log.price = ltp;
+          log.qty = dbPos.qty;
+          log.totalAmount = totalAmount;
+          log.strategy = "SMA Crossover (Live 15m WS)";
+          log.signalReason = `WS Trailing Stop Loss triggered. Price ₹${ltp.toFixed(2)} <= SL price ₹${dbPos.trailingStopPrice.toFixed(2)}`;
+          log.brokerOrderId = order.order_id || JSON.stringify(order);
+          log.transactionFees = fees;
+          log.portfolioValueAfterTrade = account.equity;
+          await AppDataSource.getRepository(TradeLog).save(log);
+
+          // Trade Execution Audit (Slippage Log)
+          const execLog = new ExecutionLog();
+          execLog.symbol = symbol;
+          execLog.action = "SELL";
+          execLog.signalTime = new Date();
+          execLog.signalPrice = dbPos.trailingStopPrice;
+          execLog.executionTime = new Date();
+          execLog.executionPrice = ltp;
+          execLog.slippageAmount = dbPos.trailingStopPrice - ltp;
+          execLog.slippagePercent = (execLog.slippageAmount / dbPos.trailingStopPrice) * 100;
+          execLog.signalDelayMs = 0;
+          execLog.executionDelayMs = 150; // Estimate WS roundtrip latency
+          await AppDataSource.getRepository(ExecutionLog).save(execLog);
+
+          await positionRepo.delete({ _id: dbPos._id });
+          await RiskService.incrementDailyTradeCount();
+          await this.logPerformanceSnapshot(account.equity, account.cash + totalAmount - fees, account.buyingPower);
+
+          await NotificationService.sendNotification(
+            "STOP LOSS TRIGGERED",
+            `Emergency SL exit completed for ${symbol} at actual price ₹${ltp.toFixed(2)} (Slippage: ₹${execLog.slippageAmount.toFixed(2)})`
+          );
+        }
+      }
+    } catch (err: any) {
+      console.error(`❌ Error processing real-time stop-loss for ${symbol}:`, err.message);
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * Executes scheduled strategy evaluations on completed 15-minute candles
    */
   private static async executeTick() {
     if (!this.isActive) return;
 
-    // Fetch account details and all open positions ONCE per tick (reduces API calls by 50%+)
-    let account;
-    let positions: UpstoxPosition[] = [];
-    try {
-      account = await UpstoxService.getAccount();
-      positions = await UpstoxService.getPositions();
-    } catch (err: any) {
-      console.error("❌ Error fetching Upstox account status/positions on tick:", err.message);
-      // Fallback to avoid stopping the loop
-      account = { equity: 100000, cash: 100000, buyingPower: 500000 };
-      positions = [];
+    if (!this.isIndianMarketOpen()) {
+      console.log("⏱️ Market closed. Skipping strategy evaluations.");
+      return;
     }
 
-    for (const symbol of this.targetSymbols) {
-      try {
-        // A. Fetch current stock price (LTP)
+    const release = await tradingTickMutex.acquire();
+    try {
+      const account = await UpstoxService.getAccount();
+      const positionRepo = AppDataSource.getRepository(ActivePosition);
+
+      // Verify daily drawdown
+      const isHealthy = await RiskService.checkDailyLimits(account.equity);
+      if (!isHealthy) {
+        this.stop();
+        await NotificationService.sendNotification("BOT HALTED", "Trading bot stopped trading due to daily risk limit breach.");
+        return;
+      }
+
+      for (const symbol of this.targetSymbols) {
         const currentPrice = await UpstoxService.getLastTradedPrice(symbol);
         if (currentPrice <= 0) continue;
 
-        console.log(`📊 [Live Poll] ${symbol}: Current Price = ₹${currentPrice.toFixed(2)} at ${new Date().toLocaleTimeString()}`);
+        const candles = await CandleService.getSyncedCandles(symbol, 5);
+        const closingPrices = candles.map(c => c.c);
 
-        // B. Update sliding window in memory
-        let prices = this.priceHistory.get(symbol) || [];
-        prices.push(currentPrice);
-        
-        // Keep window bounded to last 30 periods
-        if (prices.length > 30) {
-          prices.shift();
-        }
-        this.priceHistory.set(symbol, prices);
+        const strategyReport = analyzeMovingAverageCrossover(closingPrices, 9, 21);
 
-        // Find existing position for this symbol from pre-fetched positions
-        const position = positions.find(p => p.symbol.toUpperCase() === symbol.toUpperCase()) || null;
+        // Store Strategy Decision in DB
+        const decision = new StrategyDecision();
+        decision.symbol = symbol;
+        decision.fastSma = strategyReport.fastSma;
+        decision.slowSma = strategyReport.slowSma;
+        decision.rsi = strategyReport.rsi;
+        decision.signal = strategyReport.signal;
+        decision.reason = strategyReport.reason;
+        await AppDataSource.getRepository(StrategyDecision).save(decision);
 
-        // D. Risk Check: Enforce Stop-Loss if we hold this stock
-        if (position) {
-          const stopLossResult = RiskService.shouldTriggerStopLoss(position, 0.02); // 2% limit
-          
-          if (stopLossResult.trigger) {
-            console.log(`🚨 STOP LOSS ACTIVATED: Selling holdings of ${symbol} at ₹${currentPrice}`);
-            
-            // Execute order
-            await UpstoxService.placeOrder(symbol, position.qty, "SELL", "MARKET");
+        const dbPos = await positionRepo.findOne({ where: { symbol } as any });
 
-            // Save Trade Log to Database
-            await this.saveTradeLog(
-              symbol,
-              "SELL",
-              currentPrice,
-              position.qty,
-              "SMA Crossover (Upstox Live)",
-              `STOP LOSS TRIGGERED: Ticker dropped ${(stopLossResult.currentLossPercent * 100).toFixed(2)}% below entry price.`
-            );
-
-            await this.logPerformanceSnapshot(account.equity, account.cash, account.buyingPower, 0);
-            continue; // Skip strategy logic for this ticker this tick
+        // Buy execution pipeline
+        if (strategyReport.signal === "BUY" && !dbPos) {
+          // Verify Guard
+          const guard = await PositionGuardService.verifyOrderAllowed(symbol, "BUY");
+          if (!guard.allowed) {
+            console.warn(`🛑 PositionGuard blocked BUY order: ${guard.reason}`);
+            continue;
           }
-        }
 
-        // E. Strategy Calculations
-        const strategyReport = analyzeMovingAverageCrossover(prices, 9, 21);
-        console.log(`⚙️ Strategy check for ${symbol}: Signal is ${strategyReport.signal} | ${strategyReport.reason}`);
+          const qty = RiskService.calculatePositionSize(account.equity, currentPrice, 0.02);
+          if (qty > 0) {
+            const totalCost = qty * currentPrice;
+            const fees = 40;
 
-        // Case Buy: Triggered and we do not hold shares
-        if (strategyReport.signal === "BUY" && !position) {
-          // Size position: Max 5% of overall equity
-          const qtyToBuy = RiskService.calculatePositionSize(account.equity, currentPrice, 0.05);
+            if (account.cash >= (totalCost + fees)) {
+              const order = await UpstoxService.placeOrder(symbol, qty, "BUY", "MARKET");
 
-          if (qtyToBuy > 0) {
-            const totalCost = qtyToBuy * currentPrice;
-            
-            if (account.cash >= totalCost) {
-              const order = await UpstoxService.placeOrder(symbol, qtyToBuy, "BUY", "MARKET");
-              console.log(`✅ BUY Order placed successfully on Upstox! Order ID: ${order.order_id || JSON.stringify(order)}`);
+              const newPos = new ActivePosition();
+              newPos.symbol = symbol;
+              newPos.qty = qty;
+              newPos.avgEntryPrice = currentPrice;
+              newPos.peakPrice = currentPrice;
+              newPos.trailingStopPrice = currentPrice * 0.98;
+              newPos.stopLossPercent = 0.02;
+              await positionRepo.save(newPos);
 
-              // Save Trade Log to Database
-              await this.saveTradeLog(
-                symbol,
-                "BUY",
-                currentPrice,
-                qtyToBuy,
-                "SMA Crossover (Upstox Live)",
-                strategyReport.reason
+              const log = new TradeLog();
+              log.symbol = symbol;
+              log.action = "BUY";
+              log.price = currentPrice;
+              log.qty = qty;
+              log.totalAmount = totalCost;
+              log.strategy = "SMA Crossover (Live 15m)";
+              log.signalReason = strategyReport.reason;
+              log.brokerOrderId = order.order_id || JSON.stringify(order);
+              log.transactionFees = fees;
+              log.portfolioValueAfterTrade = account.equity;
+              await AppDataSource.getRepository(TradeLog).save(log);
+
+              // Log Slippage
+              const execLog = new ExecutionLog();
+              execLog.symbol = symbol;
+              execLog.action = "BUY";
+              execLog.signalTime = new Date();
+              execLog.signalPrice = currentPrice;
+              execLog.executionTime = new Date();
+              execLog.executionPrice = currentPrice; // Market orders assume expected = actual in mock, live computes diff
+              execLog.slippageAmount = 0;
+              execLog.slippagePercent = 0;
+              execLog.signalDelayMs = 200;
+              execLog.executionDelayMs = 150;
+              await AppDataSource.getRepository(ExecutionLog).save(execLog);
+
+              await RiskService.incrementDailyTradeCount();
+              await this.logPerformanceSnapshot(account.equity, account.cash - totalCost - fees, account.buyingPower);
+
+              await NotificationService.sendNotification(
+                "BUY EXECUTED",
+                `Bought ${qty} shares of ${symbol} at average price ₹${currentPrice.toFixed(2)}`
               );
-
-              await this.logPerformanceSnapshot(account.equity, account.cash - totalCost, account.buyingPower, 0);
-            } else {
-              console.log(`⚠️ Insufficient cash (₹${account.cash.toFixed(2)}) to place ₹${totalCost.toFixed(2)} order for ${symbol}`);
             }
           }
         }
 
-        // Case Sell: Triggered and we hold active shares
-        else if (strategyReport.signal === "SELL" && position) {
-          const order = await UpstoxService.placeOrder(symbol, position.qty, "SELL", "MARKET");
-          console.log(`✅ SELL Order placed successfully on Upstox! Order ID: ${order.order_id || JSON.stringify(order)}`);
+        // Sell execution pipeline
+        else if (strategyReport.signal === "SELL" && dbPos) {
+          // Verify Guard
+          const guard = await PositionGuardService.verifyOrderAllowed(symbol, "SELL");
+          if (!guard.allowed) {
+            console.warn(`🛑 PositionGuard blocked SELL order: ${guard.reason}`);
+            continue;
+          }
 
-          // Save Trade Log to Database
-          await this.saveTradeLog(
-            symbol,
-            "SELL",
-            currentPrice,
-            position.qty,
-            "SMA Crossover (Upstox Live)",
-            strategyReport.reason
+          const order = await UpstoxService.placeOrder(symbol, dbPos.qty, "SELL", "MARKET");
+          const totalAmount = dbPos.qty * currentPrice;
+          const fees = 40;
+
+          const log = new TradeLog();
+          log.symbol = symbol;
+          log.action = "SELL";
+          log.price = currentPrice;
+          log.qty = dbPos.qty;
+          log.totalAmount = totalAmount;
+          log.strategy = "SMA Crossover (Live 15m)";
+          log.signalReason = strategyReport.reason;
+          log.brokerOrderId = order.order_id || JSON.stringify(order);
+          log.transactionFees = fees;
+          log.portfolioValueAfterTrade = account.equity;
+          await AppDataSource.getRepository(TradeLog).save(log);
+
+          // Log Slippage
+          const execLog = new ExecutionLog();
+          execLog.symbol = symbol;
+          execLog.action = "SELL";
+          execLog.signalTime = new Date();
+          execLog.signalPrice = currentPrice;
+          execLog.executionTime = new Date();
+          execLog.executionPrice = currentPrice;
+          execLog.slippageAmount = 0;
+          execLog.slippagePercent = 0;
+          execLog.signalDelayMs = 200;
+          execLog.executionDelayMs = 150;
+          await AppDataSource.getRepository(ExecutionLog).save(execLog);
+
+          await positionRepo.delete({ _id: dbPos._id });
+          await RiskService.incrementDailyTradeCount();
+          await this.logPerformanceSnapshot(account.equity, account.cash + totalAmount - fees, account.buyingPower);
+
+          await NotificationService.sendNotification(
+            "SELL EXECUTED",
+            `Sold ${dbPos.qty} shares of ${symbol} at average price ₹${currentPrice.toFixed(2)}`
           );
-
-          await this.logPerformanceSnapshot(account.equity, account.cash + (position.qty * currentPrice), account.buyingPower, 0);
         }
-
-      } catch (err: any) {
-        console.error(`❌ Error in polling tick for ${symbol}:`, err.message);
       }
+    } catch (err: any) {
+      console.error("❌ Error in live tick execution:", err.message);
+    } finally {
+      release();
     }
   }
 
   /**
-   * Helper to write executed trade record to MongoDB
+   * Emergency Liquidation of all target symbols & deactivates trading
    */
-  private static async saveTradeLog(
-    symbol: string,
-    action: "BUY" | "SELL",
-    price: number,
-    qty: number,
-    strategy: string,
-    reason: string
-  ): Promise<void> {
+  static async forceExit(): Promise<any> {
+    this.stop();
+    const result: any[] = [];
+
     try {
-      if (!AppDataSource.isInitialized) return;
+      const brokerPositions = await UpstoxService.getPositions();
 
-      const log = new TradeLog();
-      log.symbol = symbol;
-      log.action = action;
-      log.price = price;
-      log.qty = qty;
-      log.totalAmount = price * qty;
-      log.strategy = strategy;
-      log.signalReason = reason;
+      console.log("🚨 Emergency Force Exit: Liquidating active positions...");
 
-      await AppDataSource.manager.save(log);
-      console.log(`💾 Saved trade execution log to MongoDB for ${action} ${qty} ${symbol}`);
-    } catch (e: any) {
-      console.error("❌ Error saving trade log to database:", e.message);
+      for (const pos of brokerPositions) {
+        if (pos.qty > 0) {
+          const order = await UpstoxService.placeOrder(pos.symbol, pos.qty, "SELL", "MARKET");
+          result.push({ symbol: pos.symbol, qty: pos.qty, status: "liquidated", orderId: order.order_id || order });
+
+          const log = new TradeLog();
+          log.symbol = pos.symbol;
+          log.action = "SELL";
+          log.price = pos.currentPrice;
+          log.qty = pos.qty;
+          log.totalAmount = pos.qty * pos.currentPrice;
+          log.strategy = "EMERGENCY_LIQUIDATION";
+          log.signalReason = "Admin manually invoked Emergency Force Exit.";
+          log.brokerOrderId = order.order_id || JSON.stringify(order);
+          await AppDataSource.getRepository(TradeLog).save(log);
+        }
+      }
+
+      await AppDataSource.getRepository(ActivePosition).clear();
+      await NotificationService.sendNotification("EMERGENCY FORCE EXIT", "All active positions liquidated and bot deactivated.");
+
+      return { success: true, liquidations: result };
+    } catch (err: any) {
+      console.error("❌ Critical error during emergency liquidation:", err.message);
+      throw err;
     }
   }
 
   /**
-   * Helper to write account snapshot performance metrics to MongoDB
+   * Recur system health telemetry status
    */
+  private static async logSystemTelemetry() {
+    try {
+      const os = require("os");
+      const { SystemHealthLog } = require("../entity/SystemHealthLog");
+      const healthRepo = AppDataSource.getRepository(SystemHealthLog);
+
+      const log = new SystemHealthLog();
+      const wsStatus = marketDataService.healthCheck();
+
+      log.wsStatus = wsStatus.connected ? "CONNECTED" : (wsStatus.mode === "PAPER" ? "PAPER_SIMULATOR" : "DISCONNECTED");
+      log.databaseStatus = AppDataSource.isInitialized ? "CONNECTED" : "DISCONNECTED";
+      log.activeTradingLoop = this.isActive;
+      log.cpuUsagePercent = os.loadavg()[0] * 100; // Average CPU load
+      log.freeMemoryBytes = os.freemem();
+      log.totalMemoryBytes = os.totalmem();
+      log.memoryUsagePercent = ((log.totalMemoryBytes - log.freeMemoryBytes) / log.totalMemoryBytes) * 100;
+
+      await healthRepo.save(log);
+      console.log(`📡 Telemetry log saved: CPU ${log.cpuUsagePercent.toFixed(1)}% | Memory ${log.memoryUsagePercent.toFixed(1)}% | WS: ${log.wsStatus}`);
+    } catch (e: any) {
+      console.error("❌ Failed to log system telemetry metrics:", e.message);
+    }
+  }
+
   private static async logPerformanceSnapshot(
     equity: number,
     cash: number,
-    buyingPower: number,
-    unrealizedPl: number
+    buyingPower: number
   ): Promise<void> {
     try {
-      if (!AppDataSource.isInitialized) return;
-
-      const snapshot = new BotPerformance();
-      snapshot.equity = equity;
-      snapshot.cash = cash;
-      snapshot.buyingPower = buyingPower;
-      snapshot.unrealizedPl = unrealizedPl;
-
-      await AppDataSource.manager.save(snapshot);
-      console.log("💾 Saved bot performance snapshot to MongoDB");
+      if (AppDataSource.isInitialized) {
+        const snap = new BotPerformance();
+        snap.equity = equity;
+        snap.cash = cash;
+        snap.buyingPower = buyingPower;
+        snap.unrealizedPl = 0;
+        await AppDataSource.manager.save(snap);
+      }
     } catch (e: any) {
-      console.error("❌ Error saving performance snapshot to database:", e.message);
+      console.error("❌ Failed to log performance snap:", e.message);
     }
   }
 }

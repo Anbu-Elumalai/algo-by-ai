@@ -3,13 +3,28 @@ import * as dotenv from "dotenv";
 
 dotenv.config();
 
+// Strict Environment & Secret Validation on boot-up
+const REQUIRED_ENV = [
+  "PORT",
+  "MONGO_URI",
+  "JWT_SECRET",
+  "UPSTOX_API_KEY",
+  "UPSTOX_API_SECRET",
+  "UPSTOX_REDIRECT_URI"
+];
+
+for (const envVar of REQUIRED_ENV) {
+  if (!process.env[envVar]) {
+    console.error(`❌ CRITICAL BOOT CONFIG ERROR: Environment variable '${envVar}' is missing!`);
+    process.exit(1);
+  }
+}
+
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import { useExpressServer } from "routing-controllers";
 import { AppDataSource } from "./data-source";
 import fileUpload from "express-fileupload";
-
-// ✅ Swagger
 import swaggerUi from "swagger-ui-express";
 import { swaggerSpec } from "./config/swagger";
 import { createServer } from "http";
@@ -17,17 +32,18 @@ import { TradingLoopService } from "./services/tradingLoop.service";
 
 AppDataSource.initialize()
   .then(async () => {
-    console.log("✅ Database connected successfully via TypeORM");
+    console.log("✅ Database connected successfully via TypeORM MongoDB Driver");
 
     const app = express();
     app.use(express.json());
 
+    // Secure CORS Rules
     app.use(
       cors({
-        origin: "*",  // ✅ Allow all domains
+        origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(",") : "*",
         methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
         allowedHeaders: ["Origin", "Content-Type", "Authorization"],
-        credentials: false
+        credentials: true
       })
     );
 
@@ -40,8 +56,6 @@ AppDataSource.initialize()
     );
 
     app.use("/public", express.static("public"));
-
-    // ✅ Swagger route
     app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
     const ext = __filename.endsWith(".ts") ? "ts" : "js";
@@ -62,7 +76,7 @@ AppDataSource.initialize()
     app.get("/", (_req, res) => {
       res.status(200).json({
         status: "ok",
-        service: "Algorithmic Trading Bot Backend",
+        service: "Production Algorithmic Trading Bot Backend",
         timestamp: new Date().toISOString(),
         database: AppDataSource.isInitialized ? "connected" : "disconnected",
         nodeVersion: process.version,
@@ -71,9 +85,8 @@ AppDataSource.initialize()
     });
 
     app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-      console.error(err);
+      console.error("Unhandled error:", err);
       const isProd = process.env.NODE_ENV === "production";
-
       res.status(err.httpCode || 500).json({
         message: isProd ? "An unexpected error occurred." : err.message,
         errors: isProd ? null : err.errors || null
@@ -86,18 +99,52 @@ AppDataSource.initialize()
     httpServer.listen(PORT, async () => {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`📄 Swagger documentation: http://localhost:${PORT}/api-docs`);
-      console.log(`📡 Trading Bot REST Endpoints prefix: http://localhost:${PORT}/api/trading`);
 
-      // 🤖 AUTOMATIC BOT STARTUP: Auto-start the live trading loop on server boot-up!
+      // Boot trading bot
       try {
         await TradingLoopService.start();
         console.log("🤖 Auto-start complete: Live trading loop is active!");
       } catch (err: any) {
-        console.warn("⚠️ Auto-start warning: Failed to initialize trading loop on boot (likely due to missing credentials inside .env):", err.message);
+        console.warn("⚠️ Auto-start warning: Failed to initialize trading loop on boot (credentials likely missing):", err.message);
       }
     });
 
+    // Graceful Shutdown Implementation
+    const gracefulShutdown = async (signal: string) => {
+      console.log(`\n🛑 Received ${signal} signal. Initiating graceful shutdown...`);
+
+      // Stop Trading Loop
+      try {
+        TradingLoopService.stop();
+        console.log("🤖 Live trading loop stopped.");
+      } catch (err: any) {
+        console.error("❌ Error stopping trading loop:", err.message);
+      }
+
+      // Close HTTP Server
+      httpServer.close(() => {
+        console.log("🌐 HTTP server closed.");
+      });
+
+      // Close DB connection
+      if (AppDataSource.isInitialized) {
+        try {
+          await AppDataSource.destroy();
+          console.log("💾 Database connection closed.");
+        } catch (err: any) {
+          console.error("❌ Error closing database connection:", err.message);
+        }
+      }
+
+      console.log("👋 Graceful shutdown complete. Exiting process.");
+      process.exit(0);
+    };
+
+    process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+    process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
   })
   .catch((error) => {
-    console.error("❌ Database Error on startup:", error);
+    console.error("❌ Database Connection Error on startup:", error);
+    process.exit(1);
   });

@@ -1,8 +1,8 @@
 import { Entity, ObjectIdColumn, Column, CreateDateColumn } from "typeorm";
 import { ObjectId } from "mongodb";
 
-@Entity("trade_logs")
-export class TradeLog {
+@Entity("execution_logs")
+export class ExecutionLog {
   @ObjectIdColumn()
     _id!: ObjectId;
 
@@ -13,28 +13,28 @@ export class TradeLog {
     action!: "BUY" | "SELL";
 
   @Column()
-    price!: number;
+    signalTime!: Date;
 
   @Column()
-    qty!: number;
+    signalPrice!: number;
 
   @Column()
-    totalAmount!: number;
+    executionTime!: Date;
 
   @Column()
-    strategy!: string;
+    executionPrice!: number;
 
   @Column()
-    signalReason!: string;
+    slippagePercent!: number;
 
   @Column()
-    brokerOrderId?: string; // Upstox Order ID
+    slippageAmount!: number;
 
   @Column()
-    transactionFees?: number; // Upstox & Govt charges paid
+    signalDelayMs!: number;
 
   @Column()
-    portfolioValueAfterTrade?: number; // Snapshot of portfolio value
+    executionDelayMs!: number;
 
   @CreateDateColumn()
     createdAt!: Date;

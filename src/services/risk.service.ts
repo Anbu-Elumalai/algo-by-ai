@@ -1,64 +1,163 @@
-import { UpstoxPosition } from "./upstox.service";
+import { AppDataSource } from "../data-source";
+import { DailyRiskTracker } from "../entity/DailyRiskTracker";
+import { ActivePosition } from "../entity/ActivePosition";
 
 export class RiskService {
+  private static MAX_DAILY_LOSS_PERCENT = 0.03; // 3% Max Daily Drawdown
+  private static MAX_TRADES_PER_DAY = 10;
+  private static RISK_PER_TRADE_PERCENT = 0.01; // Risk 1% of total equity on the stop-loss
+  private static MAX_ALLOCATION_PERCENT = 0.10; // Max 10% capital allocation per trade
+
   /**
-   * Dynamically calculates how many shares we can buy without risking too much capital
-   * @param accountEquity Total value of our account (cash + assets)
-   * @param currentPrice Current market price of the stock (INR)
-   * @param maxPortfolioRiskPercent Max percentage of our overall account to allocate to this trade (default 5% or 0.05)
+   * Fetch or initialize the daily risk tracking record for today
+   */
+  static async getDailyTracker(startingEquity: number): Promise<DailyRiskTracker> {
+    const todayStr = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
+    const repo = AppDataSource.getRepository(DailyRiskTracker);
+
+    let tracker = await repo.findOne({ where: { date: todayStr } as any });
+    if (!tracker) {
+      tracker = new DailyRiskTracker();
+      tracker.date = todayStr;
+      tracker.startingEquity = startingEquity;
+      tracker.currentEquity = startingEquity;
+      tracker.tradeCount = 0;
+      tracker.isHalted = false;
+      await repo.save(tracker);
+      console.log(`🛡️ Initialized new DailyRiskTracker for ${todayStr}. Starting equity: ₹${startingEquity.toFixed(2)}`);
+    } else if (tracker.startingEquity <= 0 && startingEquity > 0) {
+      tracker.startingEquity = startingEquity;
+      tracker.currentEquity = startingEquity;
+      await repo.save(tracker);
+      console.log(`🏥 DailyRiskTracker starting equity healed from zero to current equity: ₹${startingEquity.toFixed(2)}`);
+    }
+    return tracker;
+  }
+
+  /**
+   * Checks if daily trading limits (loss limit or trade count) have been breached
+   */
+  static async checkDailyLimits(currentEquity: number): Promise<boolean> {
+    const todayStr = new Date().toISOString().split("T")[0];
+    const repo = AppDataSource.getRepository(DailyRiskTracker);
+
+    let tracker = await repo.findOne({ where: { date: todayStr } as any });
+    if (!tracker) {
+      tracker = await this.getDailyTracker(currentEquity);
+    }
+
+    // Calculate current loss relative to starting equity of the day
+    const lossAmount = tracker.startingEquity - currentEquity;
+    const lossPercent = lossAmount / tracker.startingEquity;
+
+    let breachReason = "";
+    if (tracker.isHalted) {
+      breachReason = "Trading is already halted for today.";
+    } else if (lossPercent >= this.MAX_DAILY_LOSS_PERCENT) {
+      breachReason = `Daily loss limit breached: Drop of ${(lossPercent * 100).toFixed(2)}% exceeded max daily threshold of ${(this.MAX_DAILY_LOSS_PERCENT * 100).toFixed(2)}%.`;
+      tracker.isHalted = true;
+    } else if (tracker.tradeCount >= this.MAX_TRADES_PER_DAY) {
+      breachReason = `Max daily trades limit reached: ${tracker.tradeCount} trades executed. Maximum is ${this.MAX_TRADES_PER_DAY}.`;
+      tracker.isHalted = true;
+    }
+
+    // Update current equity
+    tracker.currentEquity = currentEquity;
+    await repo.save(tracker);
+
+    if (tracker.isHalted) {
+      console.warn(`🚨 RISK BREACH HALT: ${breachReason}`);
+      return false; // Risk limit breached, halt execution
+    }
+
+    return true; // Limits are clear
+  }
+
+  /**
+   * Log a trade to the daily risk count
+   */
+  static async incrementDailyTradeCount(): Promise<void> {
+    const todayStr = new Date().toISOString().split("T")[0];
+    const repo = AppDataSource.getRepository(DailyRiskTracker);
+
+    const tracker = await repo.findOne({ where: { date: todayStr } as any });
+    if (tracker) {
+      tracker.tradeCount += 1;
+      await repo.save(tracker);
+      console.log(`📈 Daily trade count incremented: ${tracker.tradeCount}/${this.MAX_TRADES_PER_DAY}`);
+    }
+  }
+
+  /**
+   * Dynamically calculates position size using both Risk and Capital constraints:
+   * 1. Capital Limit: Do not allocate more than 10% of portfolio value.
+   * 2. Risk Limit: Stop-loss (e.g. 2%) must represent at most 1% total portfolio risk.
    */
   static calculatePositionSize(
     accountEquity: number,
     currentPrice: number,
-    maxPortfolioRiskPercent: number = 0.05
+    stopLossPercent: number = 0.02
   ): number {
     if (accountEquity <= 0 || currentPrice <= 0) {
       return 0;
     }
-    
-    // Total capital we are allowed to spend on this single trade
-    const maxCapitalAllocation = accountEquity * maxPortfolioRiskPercent;
-    
-    // Calculate shares. We use Math.floor to round down to the nearest whole share.
-    const qty = Math.floor(maxCapitalAllocation / currentPrice);
-    
+
+    // Constraint 1: Maximum capital allocation (10%)
+    const maxCapitalAllocation = accountEquity * this.MAX_ALLOCATION_PERCENT;
+    const qtyCapitalLimit = Math.floor(maxCapitalAllocation / currentPrice);
+
+    // Constraint 2: Risk limit (Risk 1% of total equity on the stop-loss)
+    const maxCapitalAtRisk = accountEquity * this.RISK_PER_TRADE_PERCENT;
+    const riskPerShare = currentPrice * stopLossPercent;
+    const qtyRiskLimit = Math.floor(maxCapitalAtRisk / riskPerShare);
+
+    // Final Qty is the minimum of the two constraints
+    const qty = Math.min(qtyCapitalLimit, qtyRiskLimit);
+
     console.log(
-      `🛡️ Risk Assessment: Account Equity = ₹${accountEquity.toFixed(2)}, ` +
-      `Max Allocation per trade (5%) = ₹${maxCapitalAllocation.toFixed(2)}, ` +
-      `Current Price = ₹${currentPrice.toFixed(2)} => Target Qty = ${qty} shares.`
+      "🛡️ Position Sizing Assessment:\n" +
+      `   Account Equity: ₹${accountEquity.toFixed(2)}\n` +
+      `   Capital Constraint (10%): Max allocation ₹${maxCapitalAllocation.toFixed(2)} => ${qtyCapitalLimit} shares\n` +
+      `   Risk Constraint (1% risk on ${stopLossPercent * 100}% SL): Max Risk ₹${maxCapitalAtRisk.toFixed(2)} => ${qtyRiskLimit} shares\n` +
+      `   Selected Quantity: ${qty} shares`
     );
-    
+
     return qty;
   }
 
   /**
-   * Checks if an open position has breached our stop-loss threshold
-   * @param position Active UpstoxPosition object
-   * @param stopLossPercent Maximum allowed loss percentage (default 2% or 0.02)
+   * Evaluates the trailing stop loss for an active position, updating the peak price dynamically.
    */
-  static shouldTriggerStopLoss(
-    position: UpstoxPosition,
-    stopLossPercent: number = 0.02
-  ): { trigger: boolean; currentLossPercent: number } {
-    const entryPrice = position.avgEntryPrice;
-    const currentPrice = position.currentPrice;
+  static checkTrailingStopLoss(
+    position: ActivePosition,
+    currentPrice: number
+  ): { trigger: boolean; updatedPeak: number; trailingStop: number } {
+    let trigger = false;
+    let updatedPeak = position.peakPrice;
+    let trailingStop = position.trailingStopPrice;
 
-    if (entryPrice <= 0 || currentPrice <= 0) {
-      return { trigger: false, currentLossPercent: 0 };
+    // Initialize peak if not set
+    if (updatedPeak <= 0) {
+      updatedPeak = position.avgEntryPrice;
+      trailingStop = updatedPeak * (1 - position.stopLossPercent);
     }
 
-    // Loss = (Entry Price - Current Price) / Entry Price
-    const currentLossPercent = (entryPrice - currentPrice) / entryPrice;
+    // If current price is higher than the previous peak, trail the stop upward
+    if (currentPrice > updatedPeak) {
+      updatedPeak = currentPrice;
+      trailingStop = currentPrice * (1 - position.stopLossPercent);
+      console.log(`📈 Trailing Stop Updated for ${position.symbol}: New Peak ₹${updatedPeak.toFixed(2)} | Stop price ₹${trailingStop.toFixed(2)}`);
+    }
 
-    if (currentLossPercent >= stopLossPercent) {
+    // Trigger if price breaks the trailing stop threshold
+    if (currentPrice <= trailingStop) {
+      trigger = true;
       console.log(
-        `🚨 STOP LOSS WARNING: ${position.symbol} has dropped by ` +
-        `${(currentLossPercent * 100).toFixed(2)}% from entry price of ₹${entryPrice.toFixed(2)}. ` +
-        `Threshold is ${(stopLossPercent * 100).toFixed(2)}%.`
+        `🚨 TRAILING STOP LOSS TRIGGERED for ${position.symbol}: Price ₹${currentPrice.toFixed(2)} ` +
+        `dropped below stop-loss threshold of ₹${trailingStop.toFixed(2)} (Peak: ₹${updatedPeak.toFixed(2)})`
       );
-      return { trigger: true, currentLossPercent };
     }
 
-    return { trigger: false, currentLossPercent };
+    return { trigger, updatedPeak, trailingStop };
   }
 }

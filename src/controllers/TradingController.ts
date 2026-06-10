@@ -4,7 +4,9 @@ import {
   Post,
   Body,
   Res,
-  QueryParams
+  Req,
+  QueryParams,
+  UseBefore
 } from "routing-controllers";
 import { StatusCodes } from "http-status-codes";
 import axios from "axios";
@@ -13,24 +15,40 @@ import path from "path";
 import { TradingLoopService } from "../services/tradingLoop.service";
 import { BacktestingService } from "../services/backtesting.service";
 import { UpstoxService } from "../services/upstox.service";
+import { StrategyAnalyticsService } from "../services/strategyAnalytics.service";
 import { upstoxConfig } from "../config/upstox";
 import { TradeLog } from "../entity/TradeLog";
+import { TradingAudit } from "../entity/TradingAudit";
+import { ActivePosition } from "../entity/ActivePosition";
+import { ExecutionLog } from "../entity/ExecutionLog";
 import { AppDataSource } from "../data-source";
 import handleErrorResponse from "../utils/commonFunction";
+import { AuthMiddleware } from "../middlewares/AuthMiddleware";
+import { RateLimitMiddleware } from "../middlewares/RateLimitMiddleware";
 
 @JsonController("/trading")
+@UseBefore(RateLimitMiddleware)
 export class TradingController {
-  
+
   /**
-   * Starts the live paper trading loop
+   * Secured: Starts the live bot
    */
-  @Post("/start")
-  async startTrading(@Res() res: any) {
+  @Post("/start-bot")
+  @UseBefore(AuthMiddleware)
+  async startBot(@Req() req: any, @Res() res: any) {
     try {
       await TradingLoopService.start();
+
+      const audit = new TradingAudit();
+      audit.username = req.user?.username || "unknown_admin";
+      audit.action = "START_BOT";
+      audit.ipAddress = req.ip || req.connection?.remoteAddress || "127.0.0.1";
+      audit.details = "Trading bot manually started.";
+      await AppDataSource.getRepository(TradingAudit).save(audit);
+
       return res.status(StatusCodes.OK).json({
         success: true,
-        message: "Upstox Algorithmic Trading bot started successfully! Live 60-second LTP poll active.",
+        message: "Upstox Algorithmic Trading bot started successfully!",
         data: TradingLoopService.getStatus(),
       });
     } catch (error: any) {
@@ -39,15 +57,24 @@ export class TradingController {
   }
 
   /**
-   * Stops the live paper trading loop
+   * Secured: Stops the live bot
    */
-  @Post("/stop")
-  async stopTrading(@Res() res: any) {
+  @Post("/stop-bot")
+  @UseBefore(AuthMiddleware)
+  async stopBot(@Req() req: any, @Res() res: any) {
     try {
       TradingLoopService.stop();
+
+      const audit = new TradingAudit();
+      audit.username = req.user?.username || "unknown_admin";
+      audit.action = "STOP_BOT";
+      audit.ipAddress = req.ip || req.connection?.remoteAddress || "127.0.0.1";
+      audit.details = "Trading bot manually stopped.";
+      await AppDataSource.getRepository(TradingAudit).save(audit);
+
       return res.status(StatusCodes.OK).json({
         success: true,
-        message: "Upstox Algorithmic Trading bot stopped. Polling deactivated.",
+        message: "Upstox Algorithmic Trading bot stopped.",
         data: TradingLoopService.getStatus(),
       });
     } catch (error: any) {
@@ -56,7 +83,175 @@ export class TradingController {
   }
 
   /**
-   * Retrieves account equity, open positions, and current bot active state
+   * Secured: Restarts the live trading bot
+   */
+  @Post("/restart-bot")
+  @UseBefore(AuthMiddleware)
+  async restartBot(@Req() req: any, @Res() res: any) {
+    try {
+      TradingLoopService.stop();
+      await TradingLoopService.start();
+
+      const audit = new TradingAudit();
+      audit.username = req.user?.username || "unknown_admin";
+      audit.action = "RESTART_BOT";
+      audit.ipAddress = req.ip || req.connection?.remoteAddress || "127.0.0.1";
+      audit.details = "Trading bot manually restarted.";
+      await AppDataSource.getRepository(TradingAudit).save(audit);
+
+      return res.status(StatusCodes.OK).json({
+        success: true,
+        message: "Trading bot restarted successfully.",
+        data: TradingLoopService.getStatus(),
+      });
+    } catch (error: any) {
+      return handleErrorResponse(error, res);
+    }
+  }
+
+  /**
+   * Secured: Emergency exit / Liquidate all positions and stop bot
+   */
+  @Post("/force-exit")
+  @UseBefore(AuthMiddleware)
+  async forceExit(@Req() req: any, @Res() res: any) {
+    try {
+      const result = await TradingLoopService.forceExit();
+
+      const audit = new TradingAudit();
+      audit.username = req.user?.username || "unknown_admin";
+      audit.action = "FORCE_EXIT";
+      audit.ipAddress = req.ip || req.connection?.remoteAddress || "127.0.0.1";
+      audit.details = `Emergency liquidation completed. Result: ${JSON.stringify(result)}`;
+      await AppDataSource.getRepository(TradingAudit).save(audit);
+
+      return res.status(StatusCodes.OK).json({
+        success: true,
+        message: "EMERGENCY FORCE EXIT COMPLETED. All open positions liquidated.",
+        data: result,
+      });
+    } catch (error: any) {
+      return handleErrorResponse(error, res);
+    }
+  }
+
+  /**
+   * Secured: Returns real-time system health and socket status
+   */
+  @Get("/health")
+  @UseBefore(AuthMiddleware)
+  async getHealth(@Res() res: any) {
+    try {
+      const os = require("os");
+      const botStatus = TradingLoopService.getStatus();
+      const dbStatus = AppDataSource.isInitialized ? "connected" : "disconnected";
+
+      const telemetry = {
+        cpuLoadAvg: os.loadavg(),
+        freeMemoryBytes: os.freemem(),
+        totalMemoryBytes: os.totalmem(),
+        memoryUsagePercent: ((os.totalmem() - os.freemem()) / os.totalmem()) * 100,
+        uptimeSeconds: os.uptime(),
+      };
+
+      return res.status(StatusCodes.OK).json({
+        success: true,
+        data: {
+          bot: botStatus,
+          database: dbStatus,
+          system: telemetry,
+        }
+      });
+    } catch (error: any) {
+      return handleErrorResponse(error, res);
+    }
+  }
+
+  /**
+   * Secured: Returns portfolio dashboard aggregations, realized P&L, open and closed history
+   */
+  @Get("/dashboard")
+  @UseBefore(AuthMiddleware)
+  async getDashboard(@Res() res: any) {
+    try {
+      const botStatus = TradingLoopService.getStatus();
+      const activePositions = await AppDataSource.getRepository(ActivePosition).find();
+      const closedTrades = await AppDataSource.getRepository(TradeLog).find({
+        order: { createdAt: "DESC" } as any,
+        take: 30
+      });
+
+      const account = await UpstoxService.getAccount();
+
+      // Aggregate realized profits vs losses from logs
+      let totalRealizedProfit = 0;
+      closedTrades.forEach(log => {
+        if (log.action === "SELL") {
+          // Approximate closed trade profit (Sell total vs average buy total)
+          // For simplicity, sum total SELL amounts to net against buying costs
+          totalRealizedProfit += log.totalAmount;
+        } else {
+          totalRealizedProfit -= log.totalAmount;
+        }
+      });
+
+      return res.status(StatusCodes.OK).json({
+        success: true,
+        data: {
+          botStatus,
+          accountInfo: account,
+          openPositions: activePositions,
+          recentTrades: closedTrades,
+          netRealizedPnL: totalRealizedProfit,
+        }
+      });
+    } catch (error: any) {
+      return handleErrorResponse(error, res);
+    }
+  }
+
+  /**
+   * Secured: Returns analytics reports, win rates, Sharpe/Sortino ratios, and slippage summaries
+   */
+  @Get("/analytics")
+  @UseBefore(AuthMiddleware)
+  async getAnalytics(@Res() res: any) {
+    try {
+      // Recalculate metrics for target symbols
+      const symbols = ["RELIANCE", "TCS", "INFY"];
+      const reports = [];
+
+      for (const symbol of symbols) {
+        try {
+          const report = await StrategyAnalyticsService.calculateMetrics(symbol);
+          reports.push(report);
+        } catch (e: any) {
+          console.warn(`⚠️ Analytics recalculation failed for ${symbol}:`, e.message);
+        }
+      }
+
+      // Fetch slippage stats
+      const slippageRepo = AppDataSource.getRepository(ExecutionLog);
+      const slippages = await slippageRepo.find({ take: 20 });
+      let totalSlippage = 0;
+      slippages.forEach(log => totalSlippage += log.slippageAmount);
+      const avgSlippage = slippages.length > 0 ? totalSlippage / slippages.length : 0;
+
+      return res.status(StatusCodes.OK).json({
+        success: true,
+        data: {
+          strategyReports: reports,
+          averageSlippageAmount: avgSlippage,
+          recentSlippageLogs: slippages,
+        }
+      });
+    } catch (error: any) {
+      return handleErrorResponse(error, res);
+    }
+  }
+
+  /**
+   * Retrieves bot active state
    */
   @Get("/status")
   async getStatus(@Res() res: any) {
@@ -69,7 +264,7 @@ export class TradingController {
         accountInfo = await UpstoxService.getAccount();
         openPositions = await UpstoxService.getPositions();
       } catch (err: any) {
-        console.warn("⚠️ Could not fetch active Upstox account:", err.message);
+        console.warn("⚠️ Could not fetch live Upstox status:", err.message);
       }
 
       return res.status(StatusCodes.OK).json({
@@ -92,14 +287,12 @@ export class TradingController {
   async runBacktest(@Body() body: { symbol: string; days?: number }, @Res() res: any) {
     try {
       const { symbol, days } = body;
-      
-      // Default Indian backtest stocks if none provided
       const targetSymbol = symbol || "RELIANCE";
 
-      const report = await BacktestingService.runBacktest(targetSymbol, days || 60);
+      const report = await BacktestingService.runBacktest(targetSymbol, days || 10);
       return res.status(StatusCodes.OK).json({
         success: true,
-        message: `Backtest completed for ${targetSymbol.toUpperCase()} over ${days || 60} days.`,
+        message: `Backtest completed for ${targetSymbol.toUpperCase()} over ${days || 10} days.`,
         data: report,
       });
     } catch (error: any) {
@@ -129,7 +322,7 @@ export class TradingController {
       const repo = AppDataSource.getRepository(TradeLog);
       const logs = await repo.find({
         where: filter,
-        order: { createdAt: "DESC" },
+        order: { createdAt: "DESC" } as any,
         take: limit,
       });
 
@@ -159,7 +352,6 @@ export class TradingController {
 
   /**
    * Upstox OAuth Authorization callback endpoint
-   * Ex-changes redirect authorization code for access token
    */
   @Get("/upstox/callback")
   async handleUpstoxCallback(@QueryParams() query: { code?: string }, @Res() res: any) {
@@ -172,7 +364,7 @@ export class TradingController {
         });
       }
 
-      console.log(`📡 Exchanging Upstox authorization code for permanent access token...`);
+      console.log("📡 Exchanging Upstox authorization code for permanent access token...");
 
       const response = await axios.post(
         "https://api.upstox.com/v2/login/authorization/token",
@@ -194,50 +386,43 @@ export class TradingController {
       const tokenData = response.data;
       const newAccessToken = tokenData.access_token;
 
-      // 1. Update the token in memory so active services pick it up instantly
       upstoxConfig.accessToken = newAccessToken;
       console.log("🔄 Upstox access token successfully updated in-memory!");
 
-      // 2. Persist the new token to the local .env file
       let envUpdated = false;
       try {
         const envPath = path.resolve(process.cwd(), ".env");
         if (fs.existsSync(envPath)) {
           let envContent = fs.readFileSync(envPath, "utf-8");
           if (envContent.includes("UPSTOX_ACCESS_TOKEN=")) {
-            // Replace the existing token line
             envContent = envContent.replace(
               /UPSTOX_ACCESS_TOKEN\s*=\s*["']?[^\n\r"']+["']?/,
               `UPSTOX_ACCESS_TOKEN="${newAccessToken}"`
             );
           } else {
-            // Append the token config line if it didn't exist
             envContent += `\nUPSTOX_ACCESS_TOKEN="${newAccessToken}"\n`;
           }
           fs.writeFileSync(envPath, envContent, "utf-8");
           console.log("💾 Automatically updated UPSTOX_ACCESS_TOKEN inside .env file!");
           envUpdated = true;
-        } else {
-          console.warn("⚠️ .env file not found at path:", envPath);
         }
       } catch (err: any) {
-        console.error("❌ Failed to automatically update .env file with new token:", err.message);
+        console.error("❌ Failed to update .env file with token:", err.message);
       }
 
-      // 3. Restart the live trading bot asynchronously to apply the new credentials
       let botRestartMsg = "";
       try {
         console.log("🔄 Dynamically restarting Upstox Live Trading bot...");
         if (TradingLoopService.getStatus().isActive) {
           TradingLoopService.stop();
         }
-        
+
         TradingLoopService.start().then(() => {
           console.log("🤖 Live trading bot successfully restarted and active with new credentials!");
         }).catch((err) => {
           console.error("❌ Failed to asynchronously restart live trading bot:", err.message);
         });
-        botRestartMsg = " The live trading bot has also been dynamically restarted and is now polling with new credentials.";
+        botRestartMsg = " The live trading bot has been dynamically restarted and is now active.";
       } catch (err: any) {
         console.error("❌ Error initiating bot restart:", err.message);
         botRestartMsg = ` However, the bot failed to restart automatically: ${err.message}`;
