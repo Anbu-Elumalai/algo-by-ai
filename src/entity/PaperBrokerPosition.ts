@@ -1,8 +1,8 @@
 import { Entity, ObjectIdColumn, Column, CreateDateColumn, UpdateDateColumn } from "typeorm";
 import { ObjectId } from "mongodb";
 
-@Entity("active_positions")
-export class ActivePosition {
+@Entity("paper_broker_positions")
+export class PaperBrokerPosition {
   @ObjectIdColumn()
     _id!: ObjectId;
 
@@ -16,16 +16,13 @@ export class ActivePosition {
     avgEntryPrice!: number;
 
   @Column()
-    peakPrice!: number; // Highest price since opening the position
+    currentPrice!: number;
 
   @Column()
-    trailingStopPrice!: number; // Computed threshold for selling
-
-  @Column()
-    stopLossPercent!: number; // Stop loss percentage (e.g., 0.02)
+    unrealizedPl!: number;
 
   @Column({ nullable: true })
-    isInvalid?: boolean;
+    brokerOrderId?: string;
 
   @CreateDateColumn()
     createdAt!: Date;

@@ -13,6 +13,10 @@ import { ActivePosition } from "../entity/ActivePosition";
 import { StrategyDecision } from "../entity/StrategyDecision";
 import { ExecutionLog } from "../entity/ExecutionLog";
 import { AppDataSource } from "../data-source";
+import { PriceEngine } from "./PriceEngine";
+import { OrderExecutionManager } from "./OrderExecutionManager";
+import { PositionRecoveryManager } from "./PositionRecoveryManager";
+import { MarketDataReliabilityLayer } from "./MarketDataReliabilityLayer";
 
 export class TradingLoopService {
   private static isActive = false;
@@ -71,8 +75,9 @@ export class TradingLoopService {
       await this.recoverState();
 
       // 3. Connect WebSocket Price Stream Listeners
-      marketDataService.removeAllListeners("priceUpdate");
-      marketDataService.on("priceUpdate", async ({ symbol, ltp }) => {
+      PriceEngine.initialize();
+      PriceEngine.removeAllListeners("priceUpdate");
+      PriceEngine.on("priceUpdate", async ({ symbol, ltp }) => {
         await this.processRealtimePriceUpdate(symbol, ltp);
       });
 
@@ -85,6 +90,12 @@ export class TradingLoopService {
       this.healthLogIntervalId = setInterval(async () => {
         await this.logSystemTelemetry();
       }, 300000);
+
+      // Start periodic 5-minute position reconciliation checks
+      PositionRecoveryManager.startPeriodicReconciliation();
+
+      // Initialize Market Data Reliability Layer
+      MarketDataReliabilityLayer.initialize(this.targetSymbols);
 
       await NotificationService.sendNotification("BOT STARTED", "Trading bot has successfully started and is monitoring price streams.");
     } catch (err: any) {
@@ -112,7 +123,9 @@ export class TradingLoopService {
     }
 
     this.isActive = false;
-    marketDataService.removeAllListeners("priceUpdate");
+    PriceEngine.removeAllListeners("priceUpdate");
+    PositionRecoveryManager.stop();
+    MarketDataReliabilityLayer.stop();
     console.log("🔌 Trading loop and telemetry deactivated.");
   }
 
@@ -122,6 +135,9 @@ export class TradingLoopService {
   private static async recoverState(): Promise<void> {
     console.log("🏥 Restoring active system state from database...");
     try {
+      // 3-way startup reconciliation check
+      await PositionRecoveryManager.runStartupCheck();
+
       const positionRepo = AppDataSource.getRepository(ActivePosition);
       const openPositions = await positionRepo.find();
 
@@ -138,18 +154,25 @@ export class TradingLoopService {
     }
   }
 
-  /**
-   * Dynamic Trailing Stop Loss evaluator checking incoming WebSocket price ticks in real-time
-   */
   private static async processRealtimePriceUpdate(symbol: string, ltp: number) {
     if (!this.isActive) return;
+    if (MarketDataReliabilityLayer.isTradingPaused()) {
+      return;
+    }
+
+    // Performance Optimization: Check cache first to avoid database queries on every single tick
+    const { PositionReconciliationService } = require("./positionReconciliation.service");
+    const cachedPos = PositionReconciliationService.getCachedPosition(symbol);
+    if (!cachedPos || ltp <= 0) {
+      return;
+    }
 
     const release = await tradingTickMutex.acquire();
     try {
       const positionRepo = AppDataSource.getRepository(ActivePosition);
       const dbPos = await positionRepo.findOne({ where: { symbol } as any });
 
-      if (dbPos && ltp > 0) {
+      if (dbPos) {
         const slResult = RiskService.checkTrailingStopLoss(dbPos, ltp);
 
         // Update peak price and trailing stop price in database
@@ -167,7 +190,9 @@ export class TradingLoopService {
             return;
           }
 
-          const order = await UpstoxService.placeOrder(symbol, dbPos.qty, "SELL", "MARKET");
+          const idempotencyKey = `sl-${symbol}-${dbPos.qty}-${Math.floor(Date.now() / 60000)}`;
+          const correlationId = `corr-sl-${Date.now()}`;
+          const order = await OrderExecutionManager.executeOrder(idempotencyKey, correlationId, symbol, dbPos.qty, "SELL", "MARKET");
           const account = await UpstoxService.getAccount();
           const totalAmount = dbPos.qty * ltp;
           const fees = 40; // Approx trade fee
@@ -222,6 +247,9 @@ export class TradingLoopService {
    */
   private static async executeTick() {
     if (!this.isActive) return;
+    if (MarketDataReliabilityLayer.isTradingPaused()) {
+      return;
+    }
 
     if (!this.isIndianMarketOpen()) {
       console.log("⏱️ Market closed. Skipping strategy evaluations.");
@@ -242,7 +270,7 @@ export class TradingLoopService {
       }
 
       for (const symbol of this.targetSymbols) {
-        const currentPrice = await UpstoxService.getLastTradedPrice(symbol);
+        const currentPrice = await PriceEngine.getLastPrice(symbol);
         if (currentPrice <= 0) continue;
 
         const candles = await CandleService.getSyncedCandles(symbol, 5);
@@ -277,7 +305,9 @@ export class TradingLoopService {
             const fees = 40;
 
             if (account.cash >= (totalCost + fees)) {
-              const order = await UpstoxService.placeOrder(symbol, qty, "BUY", "MARKET");
+              const idempotencyKey = `crossover-BUY-${symbol}-${Math.floor(Date.now() / 900000)}`;
+              const correlationId = `corr-crossover-${Date.now()}`;
+              const order = await OrderExecutionManager.executeOrder(idempotencyKey, correlationId, symbol, qty, "BUY", "MARKET");
 
               const newPos = new ActivePosition();
               newPos.symbol = symbol;
@@ -335,7 +365,9 @@ export class TradingLoopService {
             continue;
           }
 
-          const order = await UpstoxService.placeOrder(symbol, dbPos.qty, "SELL", "MARKET");
+          const idempotencyKey = `crossover-SELL-${symbol}-${Math.floor(Date.now() / 900000)}`;
+          const correlationId = `corr-crossover-${Date.now()}`;
+          const order = await OrderExecutionManager.executeOrder(idempotencyKey, correlationId, symbol, dbPos.qty, "SELL", "MARKET");
           const totalAmount = dbPos.qty * currentPrice;
           const fees = 40;
 
@@ -397,7 +429,9 @@ export class TradingLoopService {
 
       for (const pos of brokerPositions) {
         if (pos.qty > 0) {
-          const order = await UpstoxService.placeOrder(pos.symbol, pos.qty, "SELL", "MARKET");
+          const idempotencyKey = `force-exit-${pos.symbol}-${pos.qty}-${Date.now()}`;
+          const correlationId = `corr-force-${Date.now()}`;
+          const order = await OrderExecutionManager.executeOrder(idempotencyKey, correlationId, pos.symbol, pos.qty, "SELL", "MARKET");
           result.push({ symbol: pos.symbol, qty: pos.qty, status: "liquidated", orderId: order.order_id || order });
 
           const log = new TradeLog();

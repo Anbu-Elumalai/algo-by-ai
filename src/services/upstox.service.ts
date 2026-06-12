@@ -58,7 +58,8 @@ export class UpstoxService {
       for (const pos of openPositions) {
         let currentPrice = pos.avgEntryPrice;
         try {
-          currentPrice = await this.getLastTradedPrice(pos.symbol);
+          const { PriceEngine } = require("./PriceEngine");
+          currentPrice = await PriceEngine.getLastPrice(pos.symbol);
         } catch {
           // Keep avgEntryPrice as fallback
         }
@@ -133,7 +134,8 @@ export class UpstoxService {
         for (const pos of openPositions) {
           let currentPrice = pos.avgEntryPrice;
           try {
-            currentPrice = await this.getLastTradedPrice(pos.symbol);
+            const { PriceEngine } = require("./PriceEngine");
+            currentPrice = await PriceEngine.getLastPrice(pos.symbol);
           } catch {
             // Keep average entry
           }
@@ -243,6 +245,41 @@ export class UpstoxService {
     } catch (error: any) {
       const errorMsg = error.response?.data ? JSON.stringify(error.response.data) : error.message;
       await HealthService.reportFailure("UpstoxService.placeOrder", errorMsg, error.stack);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch order details from Upstox
+   */
+  static async getOrderStatus(orderId: string): Promise<any> {
+    this.verifyCircuit();
+
+    if (process.env.TRADING_MODE === "PAPER") {
+      return {
+        status: "complete",
+        order_id: orderId,
+        average_price: 0,
+        filled_quantity: 0,
+      };
+    }
+
+    try {
+      if (!upstoxConfig.accessToken) {
+        throw new Error("No Upstox Access Token provided! Please authenticate.");
+      }
+
+      const response = await axios.get(
+        `${upstoxConfig.baseUrl}/order/details?order_id=${orderId}`,
+        { headers: this.getHeaders() }
+      );
+
+      const data = response.data?.data;
+      await HealthService.reportSuccess();
+      return data;
+    } catch (error: any) {
+      const errorMsg = error.response?.data ? JSON.stringify(error.response.data) : error.message;
+      await HealthService.reportFailure("UpstoxService.getOrderStatus", errorMsg, error.stack);
       throw error;
     }
   }

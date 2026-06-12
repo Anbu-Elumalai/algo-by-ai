@@ -102,6 +102,13 @@ AppDataSource.initialize()
 
       // Boot trading bot
       try {
+        try {
+          const { OrderExecutionManager } = require("./services/OrderExecutionManager");
+          await OrderExecutionManager.recoverPendingTransactions();
+        } catch (err: any) {
+          console.error("⚠️ Failed to recover pending transactions:", err.message);
+        }
+
         await TradingLoopService.start();
         console.log("🤖 Auto-start complete: Live trading loop is active!");
       } catch (err: any) {

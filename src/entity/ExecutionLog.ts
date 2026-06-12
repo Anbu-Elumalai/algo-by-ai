@@ -1,4 +1,4 @@
-import { Entity, ObjectIdColumn, Column, CreateDateColumn } from "typeorm";
+import { Entity, ObjectIdColumn, Column, CreateDateColumn, Index } from "typeorm";
 import { ObjectId } from "mongodb";
 
 @Entity("execution_logs")
@@ -7,6 +7,7 @@ export class ExecutionLog {
     _id!: ObjectId;
 
   @Column()
+  @Index()
     symbol!: string;
 
   @Column()

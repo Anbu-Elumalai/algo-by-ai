@@ -7,6 +7,7 @@ import { upstoxConfig } from "../config/upstox";
 
 export class MarketDataService extends EventEmitter {
   private static instance: MarketDataService;
+  public static simulatedPrices = new Map<string, number>();
   private ws: WebSocket | null = null;
   private isConnected = false;
   private reconnectAttempts = 0;
@@ -213,27 +214,65 @@ export class MarketDataService extends EventEmitter {
     };
   }
 
-  private startPaperStream() {
+  private async startPaperStream() {
     this.paperIntervals.forEach(clearInterval);
     this.paperIntervals = [];
 
-    const initialPrices: Record<string, number> = {
-      RELIANCE: 2450.0,
-      TCS: 3200.0,
-      INFY: 1450.0
-    };
+    const symbols = Array.from(this.subscribedSymbols);
+    const resolvedPrices = new Map<string, number>();
 
-    this.subscribedSymbols.forEach(symbol => {
-      let currentPrice = initialPrices[symbol] || 1000.0;
+    const { UpstoxService } = require("./upstox.service");
 
+    for (const symbol of symbols) {
+      let currentPrice = 0;
+      let success = false;
+      const attempts = 3;
+      const delayMs = 1000;
+      let lastError: any = null;
+
+      for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+          currentPrice = await UpstoxService.getLastTradedPrice(symbol);
+          if (currentPrice > 0) {
+            success = true;
+            break;
+          }
+          throw new Error(`Fetched price is zero or negative: ₹${currentPrice}`);
+        } catch (err: any) {
+          lastError = err;
+          console.warn(`⚠️ Simulator initialization attempt ${attempt}/${attempts} failed for ${symbol}: ${err.message}`);
+          if (attempt < attempts) {
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+          }
+        }
+      }
+
+      if (!success) {
+        const errorReason = `Simulator failed to fetch live LTP for ${symbol} after ${attempts} attempts: ${lastError?.message || "Unknown error"}`;
+        console.error(`❌ ${errorReason}`);
+        
+        // Emit critical error event to pause trading
+        this.emit("criticalError", errorReason);
+        return;
+      }
+
+      resolvedPrices.set(symbol, currentPrice);
+      MarketDataService.simulatedPrices.set(symbol, currentPrice);
+      console.log(`📡 Simulator initialized ${symbol} dynamically from real LTP: ₹${currentPrice.toFixed(2)}`);
+    }
+
+    // Start paper ticks only if all prices resolved successfully
+    for (const symbol of symbols) {
+      let currentPrice = resolvedPrices.get(symbol)!;
       const interval = setInterval(() => {
         const changePercent = (Math.random() - 0.5) * 0.002;
         currentPrice += currentPrice * changePercent;
+        MarketDataService.simulatedPrices.set(symbol, currentPrice);
         this.emit("priceUpdate", { symbol, ltp: currentPrice });
       }, 2000);
 
       this.paperIntervals.push(interval);
-    });
+    }
   }
 
   private getSymbolFromToken(token: string): string {
