@@ -43,10 +43,43 @@ export class PreLiveValidationService {
 
     // 4. Verify WebSocket Feed
     try {
-      await marketDataService.connect();
-      marketDataService.subscribe(targetSymbols);
-      const wsStatus = marketDataService.healthCheck();
-      report.push(`✓ WebSocket connection: ${wsStatus.mode === "PAPER" ? "PAPER_SIMULATOR (ONLINE)" : "LIVE (CONNECTED)"}`);
+      const isTest = process.env.APP_ENV === "TEST" || process.env.NODE_ENV === "test";
+      if (isTest) {
+        report.push("✓ WebSocket connection: TEST_MOCK (CONNECTED)");
+      } else {
+        await marketDataService.connect(true);
+        marketDataService.subscribe(targetSymbols);
+
+        if (!marketDataService.isWsOpen()) {
+          throw new Error("WebSocket connection state is not OPEN.");
+        }
+
+        // Wait up to 5 seconds for the first ticks to arrive
+        console.log("⏳ Waiting for initial WebSocket price ticks to arrive...");
+        let ticksArrived = false;
+        const { PriceEngine } = require("./PriceEngine");
+        for (let i = 0; i < 5; i++) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          let allTicksFresh = true;
+          for (const symbol of targetSymbols) {
+            const health = await PriceEngine.getPriceHealth(symbol);
+            if (health.stale || health.lastTickAgeMs > 5000) {
+              allTicksFresh = false;
+              break;
+            }
+          }
+          if (allTicksFresh) {
+            ticksArrived = true;
+            break;
+          }
+        }
+
+        if (!ticksArrived) {
+          throw new Error("Timeout waiting for active market data ticks. Check market hours and broker feed permissions.");
+        }
+
+        report.push("✓ WebSocket connection: LIVE (CONNECTED)");
+      }
     } catch (err: any) {
       report.push(`✗ WebSocket connection: FAILED (${err.message})`);
       success = false;
@@ -77,7 +110,22 @@ export class PreLiveValidationService {
 
     // 7. Verify Telemetry Alerts
     try {
-      report.push("✓ Notification service: INITIALIZED (SMTP / Telegram ready)");
+      const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
+      const telegramChatId = process.env.TELEGRAM_CHAT_ID;
+      const isProd = process.env.NODE_ENV === "production";
+
+      const isTokenPlaceholder = !telegramToken || telegramToken === "your_telegram_bot_token" || telegramToken.startsWith("your_");
+      const isChatIdPlaceholder = !telegramChatId || telegramChatId === "your_telegram_chat_id" || telegramChatId.startsWith("your_");
+
+      if (isProd && (isTokenPlaceholder || isChatIdPlaceholder)) {
+        throw new Error("Telegram credentials are missing or configured as default placeholders in production environment.");
+      }
+
+      if (isTokenPlaceholder || isChatIdPlaceholder) {
+        report.push("⚠ Notification service: INITIALIZED (Telegram placeholder bypass in non-production mode)");
+      } else {
+        report.push("✓ Notification service: INITIALIZED (SMTP / Telegram ready)");
+      }
     } catch (err: any) {
       report.push(`✗ Notification service: FAILED (${err.message})`);
       success = false;

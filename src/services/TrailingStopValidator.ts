@@ -3,6 +3,7 @@ import { ActivePosition } from "../entity/ActivePosition";
 import { UpstoxService } from "./upstox.service";
 import { NotificationService } from "./notification.service";
 import { PositionRepairEngine } from "./PositionRepairEngine";
+import { PriceEngine } from "./PriceEngine";
 
 export interface ValidationResult {
   symbol: string;
@@ -42,7 +43,7 @@ export class TrailingStopValidator {
         };
 
         try {
-          const ltp = await UpstoxService.getLastTradedPrice(pos.symbol);
+          const ltp = await PriceEngine.getLastPrice(pos.symbol);
           result.marketPrice = ltp;
 
           if (ltp <= 0) {
@@ -62,10 +63,10 @@ export class TrailingStopValidator {
             result.failures.push(`TrailingStop (₹${pos.trailingStopPrice}) exceeds PeakPrice (₹${pos.peakPrice})`);
           }
 
-          // Rule 3: PeakPrice <= MarketPrice * 1.05
-          if (pos.peakPrice > ltp * 1.05) {
+          // Rule 3: PeakPrice <= Math.max(pos.avgEntryPrice, ltp) * 1.05
+          if (pos.peakPrice > Math.max(pos.avgEntryPrice, ltp) * 1.05) {
             result.isValid = false;
-            result.failures.push(`PeakPrice (₹${pos.peakPrice}) is unrealistically high compared to MarketPrice (₹${ltp} * 1.05 = ₹${(ltp * 1.05).toFixed(2)})`);
+            result.failures.push(`PeakPrice (₹${pos.peakPrice}) is unrealistically high compared to Math.max(Entry, LTP) (₹${Math.max(pos.avgEntryPrice, ltp)} * 1.05 = ₹${(Math.max(pos.avgEntryPrice, ltp) * 1.05).toFixed(2)})`);
           }
 
           if (!result.isValid) {

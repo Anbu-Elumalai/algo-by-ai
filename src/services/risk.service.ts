@@ -161,3 +161,42 @@ export class RiskService {
     return { trigger, updatedPeak, trailingStop };
   }
 }
+
+export class DailyRolloverMonitor {
+  private static intervalId: NodeJS.Timeout | null = null;
+  private static lastCheckedDate: string = new Date().toISOString().split("T")[0];
+
+  static start() {
+    if (this.intervalId) return;
+    
+    console.log(`📅 Daily Rollover Monitor Started. Last checked date: ${this.lastCheckedDate}`);
+    
+    this.intervalId = setInterval(async () => {
+      const todayStr = new Date().toISOString().split("T")[0];
+      if (todayStr !== this.lastCheckedDate) {
+        console.log(`📅 Date rollover detected from ${this.lastCheckedDate} to ${todayStr}. Resetting risk limits...`);
+        this.lastCheckedDate = todayStr;
+        
+        try {
+          const { TradingLoopService } = require("./tradingLoop.service");
+          if (!TradingLoopService.getStatus().isActive) {
+            console.log("🔄 Date Rollover: Automatically restarting trading loop and resetting daily risk limits...");
+            await TradingLoopService.start();
+          } else {
+            console.log("📅 Date Rollover: Trading loop is already active. Fresh DailyRiskTracker will be dynamically initialized on next tick.");
+          }
+        } catch (err: any) {
+          console.error("❌ Failed to auto-restart trading loop on date rollover:", err.message);
+        }
+      }
+    }, 60000); // Check every minute
+  }
+
+  static stop() {
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
+      console.log("📅 Daily Rollover Monitor Stopped.");
+    }
+  }
+}

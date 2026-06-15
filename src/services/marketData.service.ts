@@ -7,18 +7,17 @@ import { upstoxConfig } from "../config/upstox";
 
 export class MarketDataService extends EventEmitter {
   private static instance: MarketDataService;
-  public static simulatedPrices = new Map<string, number>();
   private ws: WebSocket | null = null;
   private isConnected = false;
   private reconnectAttempts = 0;
   private maxBackoff = 60000; // 60s
   private baseBackoff = 1000;  // 1s
+  private hasAuthError = false;
   private subscribedSymbols = new Set<string>();
   private protoRoot: protobuf.Root | null = null;
   private feedResponseType: protobuf.Type | null = null;
   private heartbeatInterval: NodeJS.Timeout | null = null;
   private mode: "PAPER" | "LIVE" = "PAPER";
-  private paperIntervals: NodeJS.Timeout[] = [];
 
   private constructor() {
     super();
@@ -48,22 +47,16 @@ export class MarketDataService extends EventEmitter {
     }
   }
 
-  async connect() {
+  async connect(awaitConnection = false): Promise<void> {
     if (this.isConnected) return;
 
-    if (this.mode === "PAPER") {
-      this.isConnected = true;
-      console.log("📝 Running in PAPER Trading Mode. WebSocket data will be simulated.");
-      this.startPaperStream();
-      return;
-    }
-
     console.log("📡 Connecting to live Upstox WebSocket market data feed...");
+    this.hasAuthError = false; // Reset auth error flag on connect attempt
     await this.loadProtobuf();
 
     try {
       const authUrlResponse = await axios.get(
-        "https://api.upstox.com/v2/feed/market-data-feed/authorize",
+        "https://api.upstox.com/v3/feed/market-data-feed/authorize",
         {
           headers: {
             "Authorization": `Bearer ${upstoxConfig.accessToken}`,
@@ -71,70 +64,167 @@ export class MarketDataService extends EventEmitter {
           }
         }
       );
-
+      console.log("Authorize Response:", authUrlResponse.data);
       const wsUrl = authUrlResponse.data?.data?.authorized_redirect_uri;
       if (!wsUrl) {
         throw new Error("Authorized redirect URL missing from Upstox authorize API response.");
       }
 
-      this.ws = new WebSocket(wsUrl, {
-        followRedirects: true
+      console.log("Connecting to WS URL:", wsUrl);
+
+      const wsInstance = new WebSocket(wsUrl, {
+        followRedirects: true,
+        headers: {
+          "Accept": "*/*"
+        }
       });
 
-      this.ws.binaryType = "nodebuffer";
+      wsInstance.on("unexpected-response", (req, res) => {
+        console.error("Unexpected Response Status:", res.statusCode);
+        console.error("Response Headers:", res.headers);
+      });
+      this.ws = wsInstance;
 
-      this.ws.on("open", () => {
+      wsInstance.binaryType = "nodebuffer";
+
+      if (awaitConnection) {
+        await new Promise<void>((resolvePromise, rejectPromise) => {
+          const timeoutId = setTimeout(() => {
+            wsInstance.on("error", () => {}); // Swallow connection abort errors on close
+            cleanupHandshake();
+            wsInstance.close();
+            rejectPromise(new Error("WebSocket connection timed out after 10 seconds."));
+          }, 10000);
+
+          const onOpen = () => {
+            clearTimeout(timeoutId);
+            cleanupHandshake();
+
+            this.isConnected = true;
+            this.reconnectAttempts = 0;
+            this.hasAuthError = false;
+            console.log("✅ Upstox WebSocket connected successfully.");
+            this.emit("connected");
+
+            this.setupPersistentListeners(wsInstance);
+            resolvePromise();
+          };
+
+          const onError = (err: any) => {
+            clearTimeout(timeoutId);
+            cleanupHandshake();
+            console.error("❌ Upstox WebSocket handshake error:", err.message);
+
+            const isAuth = err.message && (err.message.includes("403") || err.message.includes("401") || err.message.includes("410"));
+            if (isAuth) {
+              this.hasAuthError = true;
+              this.emit("criticalError", `Upstox WebSocket authorization failed (${err.message}). Please re-authenticate.`);
+            }
+            rejectPromise(err);
+          };
+
+          const onClose = () => {
+            clearTimeout(timeoutId);
+            cleanupHandshake();
+            rejectPromise(new Error("WebSocket connection closed during handshake."));
+          };
+
+          const cleanupHandshake = () => {
+            wsInstance.off("open", onOpen);
+            wsInstance.off("error", onError);
+            wsInstance.off("close", onClose);
+          };
+
+          wsInstance.on("open", onOpen);
+          wsInstance.on("error", onError);
+          wsInstance.on("close", onClose);
+        });
+      } else {
         this.isConnected = true;
         this.reconnectAttempts = 0;
-        console.log("✅ Upstox WebSocket connected successfully.");
-        this.emit("connected");
+        this.hasAuthError = false;
 
-        if (this.subscribedSymbols.size > 0) {
-          this.subscribe(Array.from(this.subscribedSymbols));
+        this.setupPersistentListeners(wsInstance);
+
+        wsInstance.on("open", () => {
+          console.log("✅ Upstox WebSocket connected successfully.");
+          this.emit("connected");
+        });
+      }
+
+    } catch (error: any) {
+      const status = error.response?.status;
+      const isAuthError = status === 401 || status === 403 || status === 410 ||
+        (error.message && (error.message.includes("401") || error.message.includes("403") || error.message.includes("410")));
+
+      if (isAuthError) {
+        this.hasAuthError = true;
+        console.error("❌ WebSocket auth failed (Unauthorized/HTTP 403/410). Reconnection halted.");
+        this.emit("criticalError", `Upstox API Authorization failed (${error.message}). Please re-authenticate.`);
+      } else {
+        console.error("❌ WebSocket auth/connection failed:", error.message);
+      }
+
+      if (awaitConnection) {
+        throw error;
+      } else {
+        if (!this.hasAuthError) {
+          this.reconnect();
         }
+      }
+    }
+  }
 
-        this.startHeartbeat();
-      });
+  private setupPersistentListeners(wsInstance: WebSocket) {
+    wsInstance.on("message", (data: Buffer) => {
+      try {
+        if (this.feedResponseType) {
+          const message = this.feedResponseType.decode(data);
+          const obj = this.feedResponseType.toObject(message, {
+            longs: String,
+            enums: String,
+            bytes: String
+          });
 
-      this.ws.on("message", (data: Buffer) => {
-        try {
-          if (this.feedResponseType) {
-            const message = this.feedResponseType.decode(data);
-            const obj = this.feedResponseType.toObject(message, {
-              longs: String,
-              enums: String,
-              bytes: String
-            });
-
-            if (obj.feeds) {
-              for (const [key, feed] of Object.entries(obj.feeds)) {
-                const ltp = (feed as any).ltpc?.ltp || (feed as any).fullFeed?.ltpc?.ltp;
-                if (ltp !== undefined) {
-                  this.emit("priceUpdate", { symbol: this.getSymbolFromToken(key), ltp });
-                }
+          if (obj.feeds) {
+            for (const [key, feed] of Object.entries(obj.feeds)) {
+              const ltp = (feed as any).ltpc?.ltp || (feed as any).fullFeed?.ltpc?.ltp;
+              if (ltp !== undefined) {
+                this.emit("priceUpdate", { symbol: this.getSymbolFromToken(key), ltp });
               }
             }
           }
-        } catch (e: any) {
-          console.error("❌ Failed to decode incoming WebSocket binary frame:", e.message);
         }
-      });
+      } catch (e: any) {
+        console.error("❌ Failed to decode incoming WebSocket binary frame:", e.message);
+      }
+    });
 
-      this.ws.on("close", () => {
-        this.isConnected = false;
-        console.warn("⚠️ Upstox WebSocket disconnected.");
-        this.stopHeartbeat();
+    wsInstance.on("close", () => {
+      this.isConnected = false;
+      console.warn("⚠️ Upstox WebSocket disconnected.");
+      this.stopHeartbeat();
+      if (this.hasAuthError) {
+        console.warn("❌ WebSocket reconnect skipped due to authorization failure. Please authenticate.");
+      } else {
         this.reconnect();
-      });
+      }
+    });
 
-      this.ws.on("error", (err: any) => {
-        console.error("❌ Upstox WebSocket error:", err.message);
-      });
+    wsInstance.on("error", (err: any) => {
+      console.error("❌ Upstox WebSocket error:", err.message);
+      const isAuthError = err.message && (err.message.includes("403") || err.message.includes("401") || err.message.includes("410"));
+      if (isAuthError) {
+        this.hasAuthError = true;
+        this.emit("criticalError", `Upstox WebSocket authorization failed (${err.message}). Please re-authenticate.`);
+      }
+    });
 
-    } catch (error: any) {
-      console.error("❌ WebSocket auth/connection failed:", error.message);
-      this.reconnect();
+    if (this.subscribedSymbols.size > 0) {
+      this.subscribe(Array.from(this.subscribedSymbols));
     }
+
+    this.startHeartbeat();
   }
 
   private reconnect() {
@@ -142,7 +232,9 @@ export class MarketDataService extends EventEmitter {
     const backoff = Math.min(this.baseBackoff * Math.pow(2, this.reconnectAttempts), this.maxBackoff);
     console.log(`🔄 Reconnecting to WebSocket in ${(backoff / 1000).toFixed(1)} seconds (Attempt ${this.reconnectAttempts})...`);
     setTimeout(() => {
-      this.connect();
+      this.connect().catch(() => {
+        // Suppress background reconnect logs to avoid double-printing stack traces
+      });
     }, backoff);
   }
 
@@ -150,11 +242,6 @@ export class MarketDataService extends EventEmitter {
     symbols.forEach(sym => this.subscribedSymbols.add(sym.toUpperCase()));
 
     if (!this.isConnected) return;
-
-    if (this.mode === "PAPER") {
-      this.startPaperStream();
-      return;
-    }
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       const keys = symbols.map(sym => upstoxConfig.getInstrumentToken(sym));
@@ -175,7 +262,7 @@ export class MarketDataService extends EventEmitter {
   unsubscribe(symbols: string[]) {
     symbols.forEach(sym => this.subscribedSymbols.delete(sym.toUpperCase()));
 
-    if (!this.isConnected || this.mode === "PAPER") return;
+    if (!this.isConnected) return;
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       const keys = symbols.map(sym => upstoxConfig.getInstrumentToken(sym));
@@ -206,74 +293,19 @@ export class MarketDataService extends EventEmitter {
     }
   }
 
+  isWsOpen(): boolean {
+    return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+  }
+
   healthCheck() {
     return {
-      connected: this.isConnected,
+      connected: this.isWsOpen(),
       mode: this.mode,
       subscriptions: Array.from(this.subscribedSymbols)
     };
   }
 
-  private async startPaperStream() {
-    this.paperIntervals.forEach(clearInterval);
-    this.paperIntervals = [];
-
-    const symbols = Array.from(this.subscribedSymbols);
-    const resolvedPrices = new Map<string, number>();
-
-    const { UpstoxService } = require("./upstox.service");
-
-    for (const symbol of symbols) {
-      let currentPrice = 0;
-      let success = false;
-      const attempts = 3;
-      const delayMs = 1000;
-      let lastError: any = null;
-
-      for (let attempt = 1; attempt <= attempts; attempt++) {
-        try {
-          currentPrice = await UpstoxService.getLastTradedPrice(symbol);
-          if (currentPrice > 0) {
-            success = true;
-            break;
-          }
-          throw new Error(`Fetched price is zero or negative: ₹${currentPrice}`);
-        } catch (err: any) {
-          lastError = err;
-          console.warn(`⚠️ Simulator initialization attempt ${attempt}/${attempts} failed for ${symbol}: ${err.message}`);
-          if (attempt < attempts) {
-            await new Promise(resolve => setTimeout(resolve, delayMs));
-          }
-        }
-      }
-
-      if (!success) {
-        const errorReason = `Simulator failed to fetch live LTP for ${symbol} after ${attempts} attempts: ${lastError?.message || "Unknown error"}`;
-        console.error(`❌ ${errorReason}`);
-        
-        // Emit critical error event to pause trading
-        this.emit("criticalError", errorReason);
-        return;
-      }
-
-      resolvedPrices.set(symbol, currentPrice);
-      MarketDataService.simulatedPrices.set(symbol, currentPrice);
-      console.log(`📡 Simulator initialized ${symbol} dynamically from real LTP: ₹${currentPrice.toFixed(2)}`);
-    }
-
-    // Start paper ticks only if all prices resolved successfully
-    for (const symbol of symbols) {
-      let currentPrice = resolvedPrices.get(symbol)!;
-      const interval = setInterval(() => {
-        const changePercent = (Math.random() - 0.5) * 0.002;
-        currentPrice += currentPrice * changePercent;
-        MarketDataService.simulatedPrices.set(symbol, currentPrice);
-        this.emit("priceUpdate", { symbol, ltp: currentPrice });
-      }, 2000);
-
-      this.paperIntervals.push(interval);
-    }
-  }
+  // Paper stream removed in favor of real market data feed
 
   private getSymbolFromToken(token: string): string {
     for (const [symbol, instrToken] of Object.entries(upstoxConfig.instruments)) {

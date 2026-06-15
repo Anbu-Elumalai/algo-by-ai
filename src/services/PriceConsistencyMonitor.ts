@@ -3,15 +3,14 @@ import { MarketDataService } from "./marketData.service";
 import { UpstoxService } from "./upstox.service";
 import { MarketDataReliabilityLayer } from "./MarketDataReliabilityLayer";
 import { NotificationService } from "./notification.service";
+import { AppDataSource } from "../data-source";
+import { FeedHealthLog } from "../entity/FeedHealthLog";
 
 export interface DivergenceMetrics {
   symbol: string;
   priceEnginePrice: number;
-  simulatorPrice: number;
   restLtpPrice: number;
-  divergenceEngineRestPercent: number;
-  divergenceSimRestPercent: number;
-  divergenceEngineSimPercent: number;
+  divergencePercent: number;
   maxDivergencePercent: number;
 }
 
@@ -68,28 +67,21 @@ export class PriceConsistencyMonitor {
     for (const symbol of this.targetSymbols) {
       try {
         const priceEnginePrice = PriceEngine.getLastPriceSync(symbol);
-        const simulatorPrice = MarketDataService.simulatedPrices.get(symbol) || 0;
         const restLtpPrice = await UpstoxService.getLastTradedPrice(symbol);
 
-        if (priceEnginePrice <= 0 || simulatorPrice <= 0 || restLtpPrice <= 0) {
+        if (priceEnginePrice <= 0 || restLtpPrice <= 0) {
           // Prices not initialized yet, skip checks for now
           continue;
         }
 
-        const divEngineRest = (Math.abs(priceEnginePrice - restLtpPrice) / restLtpPrice) * 100;
-        const divSimRest = (Math.abs(simulatorPrice - restLtpPrice) / restLtpPrice) * 100;
-        const divEngineSim = (Math.abs(priceEnginePrice - simulatorPrice) / simulatorPrice) * 100;
-        const maxDivergence = Math.max(divEngineRest, divSimRest, divEngineSim);
+        const divergence = (Math.abs(priceEnginePrice - restLtpPrice) / restLtpPrice) * 100;
 
         const metrics: DivergenceMetrics = {
           symbol,
           priceEnginePrice,
-          simulatorPrice,
           restLtpPrice,
-          divergenceEngineRestPercent: divEngineRest,
-          divergenceSimRestPercent: divSimRest,
-          divergenceEngineSimPercent: divEngineSim,
-          maxDivergencePercent: maxDivergence
+          divergencePercent: divergence,
+          maxDivergencePercent: divergence
         };
 
         this.latestMetrics.set(symbol, metrics);
@@ -97,24 +89,49 @@ export class PriceConsistencyMonitor {
         console.log(
           `📊 Price Audit for ${symbol}:\n` +
           `   - PriceEngine:  ₹${priceEnginePrice.toFixed(2)}\n` +
-          `   - Simulator:    ₹${simulatorPrice.toFixed(2)}\n` +
           `   - REST LTP:     ₹${restLtpPrice.toFixed(2)}\n` +
-          `   - Max Div:      ${maxDivergence.toFixed(2)}%`
+          `   - Divergence:   ${divergence.toFixed(2)}%`
         );
 
-        if (maxDivergence > 2.0) {
-          const alarmReason = `CRITICAL PRICE DIVERGENCE DETECTED on ${symbol}: Max Divergence ${maxDivergence.toFixed(2)}% ` +
-            `(PriceEngine: ₹${priceEnginePrice.toFixed(2)}, Simulator: ₹${simulatorPrice.toFixed(2)}, REST LTP: ₹${restLtpPrice.toFixed(2)})`;
+        // 1. Log metrics to MongoDB FeedHealthLog
+        try {
+          if (AppDataSource.isInitialized) {
+            const feedHealthRepo = AppDataSource.getRepository(FeedHealthLog);
+            const log = new FeedHealthLog();
+            log.symbol = symbol;
+            log.wsPrice = priceEnginePrice;
+            log.restPrice = restLtpPrice;
+            log.divergence = divergence;
+            await feedHealthRepo.save(log);
+          }
+        } catch (dbErr: any) {
+          console.error(`❌ Failed to save FeedHealthLog for ${symbol}:`, dbErr.message);
+        }
+
+        // 2. Alert / Action Rules
+        if (divergence > 3.0) {
+          const alarmReason = `CRITICAL PRICE DIVERGENCE PAUSE on ${symbol}: Divergence ${divergence.toFixed(2)}% ` +
+            `(PriceEngine: ₹${priceEnginePrice.toFixed(2)}, REST LTP: ₹${restLtpPrice.toFixed(2)})`;
           
           console.error(`🚨 ${alarmReason}`);
 
           // Immediately pause trading
           await MarketDataReliabilityLayer.pauseTrading(alarmReason);
+        } else if (divergence > 2.0) {
+          const alarmReason = `CRITICAL PRICE DIVERGENCE DETECTED on ${symbol}: Divergence ${divergence.toFixed(2)}% ` +
+            `(PriceEngine: ₹${priceEnginePrice.toFixed(2)}, REST LTP: ₹${restLtpPrice.toFixed(2)})`;
+          
+          console.error(`🚨 ${alarmReason}`);
 
           // Dispatch critical alerts via Telegram & Email (handled inside NotificationService)
           await NotificationService.sendNotification(
             "CRITICAL: Price Feed Divergence Breach",
             alarmReason
+          );
+        } else if (divergence > 1.0) {
+          console.warn(
+            `⚠️ Warning: Price divergence for ${symbol} is ${divergence.toFixed(2)}% ` +
+            `(PriceEngine: ₹${priceEnginePrice.toFixed(2)}, REST LTP: ₹${restLtpPrice.toFixed(2)})`
           );
         }
       } catch (err: any) {

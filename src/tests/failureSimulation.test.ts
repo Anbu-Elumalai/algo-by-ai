@@ -9,6 +9,9 @@ import { UpstoxService } from "../services/upstox.service";
 import { AppDataSource } from "../data-source";
 import { ActivePosition } from "../entity/ActivePosition";
 import { RefreshToken } from "../entity/RefreshToken";
+import { PriceConsistencyMonitor } from "../services/PriceConsistencyMonitor";
+import { TrailingStopValidator } from "../services/TrailingStopValidator";
+import { TradingLoopService } from "../services/tradingLoop.service";
 
 // Define mock variables with 'var' to hoist their declarations to the very top, avoiding TDZ reference errors
 var mockSaveFn = jest.fn((entity: any): Promise<any> => Promise.resolve(entity));
@@ -46,6 +49,7 @@ jest.mock("../services/upstox.service", () => ({
     getPositions: jest.fn((): Promise<any[]> => Promise.resolve([])),
     getPosition: jest.fn((): Promise<any> => Promise.resolve(null)),
     getLastTradedPrice: jest.fn((): Promise<number> => Promise.resolve(100)),
+    getAccount: jest.fn((): Promise<any> => Promise.resolve({ equity: 100000, cash: 100000, buyingPower: 500000 })),
   },
 }));
 
@@ -72,6 +76,13 @@ describe("Algorithmic Trading Bot Failure Simulation Test Suite", () => {
     PositionReconciliationService.setSystemHalted(false);
     PositionReconciliationService.clearCache();
     MarketDataReliabilityLayer.reset();
+  });
+
+  afterAll(() => {
+    MarketDataReliabilityLayer.stop();
+    PriceConsistencyMonitor.stop();
+    PriceEngine.stop();
+    TrailingStopValidator.stopDailyAuditJob();
   });
 
   // 1. API Outage & Circuit Breaker Test
@@ -284,5 +295,46 @@ describe("Algorithmic Trading Bot Failure Simulation Test Suite", () => {
     await (MarketDataReliabilityLayer as any).auditFeedReliability();
 
     expect(MarketDataReliabilityLayer.isTradingPaused()).toBe(true);
+  });
+
+  // 11. Position Manager Cache Sync & Trailing Stop Loss Trigger
+  test("11. PositionReconciliationService cache updates instantly and trailing stop triggers SELL", async () => {
+    const mockActivePos: ActivePosition = {
+      _id: {} as any,
+      symbol: "RELIANCE",
+      qty: 10,
+      avgEntryPrice: 1000,
+      peakPrice: 1000,
+      trailingStopPrice: 980,
+      stopLossPercent: 0.02,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    // Save position (updates DB and memory cache)
+    await PositionReconciliationService.savePosition(mockActivePos);
+
+    // Assert cache is updated instantly (Zero lag!)
+    expect(PositionReconciliationService.getCachedPosition("RELIANCE")).toBe(mockActivePos);
+
+    // Setup mocks for PositionGuard check and execution flow
+    (UpstoxService.getPositions as jest.Mock).mockResolvedValue([{
+      symbol: "RELIANCE",
+      qty: 10,
+      avgEntryPrice: 1000,
+      currentPrice: 970,
+      unrealizedPl: -300
+    }]);
+    mockFindOne.mockResolvedValue(mockActivePos);
+
+    // Set active
+    (TradingLoopService as any).isActive = true;
+
+    // Simulate price tick that breaches stop loss (970 <= 980)
+    await (TradingLoopService as any).processRealtimePriceUpdate("RELIANCE", 970);
+
+    // Assert that the deletePosition was called and positions are deleted
+    expect(mockDelete).toHaveBeenCalled();
+    expect(PositionReconciliationService.getCachedPosition("RELIANCE")).toBeUndefined();
   });
 });

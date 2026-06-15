@@ -31,6 +31,24 @@ import { RateLimitMiddleware } from "../middlewares/RateLimitMiddleware";
 export class TradingController {
 
   /**
+   * Secured: Send test notification
+   */
+  @Post("/sendTestNotification")
+  @UseBefore(AuthMiddleware)
+  async sendTestNotification(@Res() res: any) {
+    try {
+      const { NotificationService } = require("../services/notification.service");
+      await NotificationService.sendNotification("TEST ALERTS", "This is a test notification verifying Telegram and Email connectivity.");
+      return res.status(StatusCodes.OK).json({
+        success: true,
+        message: "Test notification sent successfully."
+      });
+    } catch (error: any) {
+      return handleErrorResponse(error, res);
+    }
+  }
+
+  /**
    * Secured: Starts the live bot
    */
   @Post("/start-bot")

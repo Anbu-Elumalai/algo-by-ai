@@ -31,16 +31,26 @@ export class NotificationService {
     const telegramChatId = process.env.TELEGRAM_CHAT_ID;
 
     if (telegramToken && telegramChatId) {
-      try {
-        const url = `https://api.telegram.org/bot${telegramToken}/sendMessage`;
-        await axios.post(url, {
-          chat_id: telegramChatId,
-          text: `🔔 *${subject}*\n\n${message}`,
-          parse_mode: "Markdown"
-        });
-        console.log("📨 Telegram alert successfully delivered.");
-      } catch (err: any) {
-        console.error("❌ Failed to send Telegram alert:", err.message);
+      const isPlaceholder =
+        telegramToken === "your_telegram_bot_token" ||
+        telegramChatId === "your_telegram_chat_id" ||
+        telegramToken.startsWith("your_") ||
+        telegramChatId.startsWith("your_");
+
+      if (isPlaceholder) {
+        console.warn("⚠️ Telegram notification skipped: default placeholder credentials detected.");
+      } else {
+        try {
+          const url = `https://api.telegram.org/bot${telegramToken}/sendMessage`;
+          await axios.post(url, {
+            chat_id: telegramChatId,
+            text: `🔔 *${subject}*\n\n${message}`,
+            parse_mode: "Markdown"
+          });
+          console.log("📨 Telegram alert successfully delivered.");
+        } catch (err: any) {
+          console.error("❌ Failed to send Telegram alert:", err.message);
+        }
       }
     }
 

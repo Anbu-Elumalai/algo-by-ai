@@ -14,6 +14,7 @@ export class PriceEngine {
   private static lastTickTimes = new Map<string, number>();
   private static emitter = new EventEmitter();
   private static isInitialized = false;
+  private static auditInterval: NodeJS.Timeout | null = null;
 
   private static STALE_THRESHOLD_MS = 5000; // 5 seconds stale limit
   private static DIVERGENCE_CHECK_INTERVAL = 30000; // Check every 30 seconds
@@ -32,12 +33,23 @@ export class PriceEngine {
     });
 
     // Start background price health and divergence monitor
-    setInterval(async () => {
+    if (this.auditInterval) {
+      clearInterval(this.auditInterval);
+    }
+    this.auditInterval = setInterval(async () => {
       await this.runDivergenceAudit();
     }, this.DIVERGENCE_CHECK_INTERVAL);
 
     this.isInitialized = true;
     console.log("✅ Centralized Price Engine Ready.");
+  }
+
+  static stop(): void {
+    if (this.auditInterval) {
+      clearInterval(this.auditInterval);
+      this.auditInterval = null;
+    }
+    this.isInitialized = false;
   }
 
   static on(event: string, listener: (data: { symbol: string; ltp: number }) => void): void {
@@ -107,7 +119,7 @@ export class PriceEngine {
     }
 
     return {
-      stale: age > this.STALE_THRESHOLD_MS,
+      stale: lastTickTime > 0 && age > this.STALE_THRESHOLD_MS,
       lastTickAgeMs: lastTickTime > 0 ? age : Infinity,
       feedDivergencePercent: divergence,
       lagMs: age > 0 && age < Infinity ? age : 0

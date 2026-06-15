@@ -29,6 +29,9 @@ export class UpstoxService {
   }
 
   private static verifyCircuit() {
+    if (process.env.TRADING_MODE === "PAPER") {
+      return;
+    }
     if (!HealthService.isTradingAllowed()) {
       throw new Error("❌ API Execution Halted: The Circuit Breaker is OPEN due to repeated API failures.");
     }
@@ -81,12 +84,12 @@ export class UpstoxService {
    * Fetch current account margin and funds balance
    */
   static async getAccount(): Promise<UpstoxAccount> {
-    this.verifyCircuit();
-
     // Intercept if in PAPER trading mode
     if (process.env.TRADING_MODE === "PAPER") {
       return this.getPaperAccount();
     }
+
+    this.verifyCircuit();
 
     try {
       if (!upstoxConfig.accessToken) {
@@ -119,11 +122,43 @@ export class UpstoxService {
   }
 
   /**
+   * Fetch active user profile from Upstox (auth token verification)
+   */
+  static async getProfile(): Promise<any> {
+    if (process.env.TRADING_MODE === "PAPER") {
+      return { status: "success", data: { email: "paper@trading.sim", name: "Paper Trader" } };
+    }
+
+    this.verifyCircuit();
+
+    try {
+      if (!upstoxConfig.accessToken) {
+        throw new Error("No Upstox Access Token provided! Please authenticate.");
+      }
+
+      const response = await axios.get(
+        `${upstoxConfig.baseUrl}/user/profile`,
+        { headers: this.getHeaders() }
+      );
+
+      const data = response.data?.data;
+      if (!data) {
+        throw new Error("Invalid response schema returned from Upstox Profile API.");
+      }
+
+      await HealthService.reportSuccess();
+      return data;
+    } catch (error: any) {
+      const errorMsg = error.response?.data ? JSON.stringify(error.response.data) : error.message;
+      await HealthService.reportFailure("UpstoxService.getProfile", errorMsg, error.stack);
+      throw error;
+    }
+  }
+
+  /**
    * Fetch active intraday/delivery holdings
    */
   static async getPositions(): Promise<UpstoxPosition[]> {
-    this.verifyCircuit();
-
     // In paper trading mode, positions are fetched from the database ActivePosition collection cache
     if (process.env.TRADING_MODE === "PAPER") {
       try {
@@ -202,8 +237,6 @@ export class UpstoxService {
     orderType: "MARKET" | "LIMIT" = "MARKET",
     price?: number
   ): Promise<any> {
-    this.verifyCircuit();
-
     // Intercept if in PAPER trading mode
     if (process.env.TRADING_MODE === "PAPER") {
       console.log(`📝 [PAPER TRADE] Simulating ${side} order: ${qty} shares of ${symbol}`);
@@ -253,8 +286,6 @@ export class UpstoxService {
    * Fetch order details from Upstox
    */
   static async getOrderStatus(orderId: string): Promise<any> {
-    this.verifyCircuit();
-
     if (process.env.TRADING_MODE === "PAPER") {
       return {
         status: "complete",
@@ -348,12 +379,16 @@ export class UpstoxService {
       const key = Object.keys(ltpData)[0];
       const ltp = parseFloat(ltpData[key]?.last_price || 0);
 
+      if (ltp <= 0) {
+        throw new Error(`Invalid LTP returned from broker: ₹${ltp}`);
+      }
+
       await HealthService.reportSuccess();
       return ltp;
     } catch (error: any) {
       const errorMsg = error.response?.data ? JSON.stringify(error.response.data) : error.message;
       await HealthService.reportFailure("UpstoxService.getLastTradedPrice", errorMsg, error.stack);
-      throw error;
+      throw new Error(`Market data unavailable for ${symbol}: ${errorMsg}`);
     }
   }
 }

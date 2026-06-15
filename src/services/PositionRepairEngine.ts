@@ -2,6 +2,7 @@ import { AppDataSource } from "../data-source";
 import { ActivePosition } from "../entity/ActivePosition";
 import { UpstoxService } from "./upstox.service";
 import { NotificationService } from "./notification.service";
+import { PriceEngine } from "./PriceEngine";
 
 export interface RepairReportItem {
   symbol: string;
@@ -65,15 +66,15 @@ export class PositionRepairEngine {
 
         try {
           // 1. Fetch real LTP
-          const ltp = await UpstoxService.getLastTradedPrice(pos.symbol);
+          const ltp = await PriceEngine.getLastPrice(pos.symbol);
           item.marketPrice = ltp;
 
           if (ltp <= 0) {
             throw new Error(`Fetched invalid LTP: ₹${ltp}`);
           }
 
-          // Rule: If PeakPrice > CurrentMarketPrice * 1.05, it is CORRUPTED
-          if (pos.peakPrice > ltp * 1.05) {
+          // Rule: If PeakPrice > Math.max(pos.avgEntryPrice, ltp) * 1.05, it is CORRUPTED
+          if (pos.peakPrice > Math.max(pos.avgEntryPrice, ltp) * 1.05) {
             item.corrupted = true;
             report.corruptedPositionsCount++;
 

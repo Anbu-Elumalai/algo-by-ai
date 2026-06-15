@@ -9,6 +9,33 @@ import { UpstoxService } from "../services/upstox.service";
 import { AppDataSource } from "../data-source";
 import { ActivePosition } from "../entity/ActivePosition";
 import { TradeLog } from "../entity/TradeLog";
+import axios from "axios";
+
+// Mock axios and ws
+jest.mock("axios");
+
+let mockWsInstance: any = null;
+jest.mock("ws", () => {
+  const mockWebSocket: any = jest.fn().mockImplementation(() => {
+    const ws = {
+      on: jest.fn((event: string, cb: Function) => {
+        ws.listeners[event] = cb;
+      }),
+      close: jest.fn(),
+      ping: jest.fn(),
+      send: jest.fn(),
+      readyState: 1,
+      listeners: {} as Record<string, Function>,
+    };
+    mockWsInstance = ws;
+    return ws;
+  });
+  mockWebSocket.CONNECTING = 0;
+  mockWebSocket.OPEN = 1;
+  mockWebSocket.CLOSING = 2;
+  mockWebSocket.CLOSED = 3;
+  return mockWebSocket;
+});
 
 // Setup Hoisted Jest Mock Functions
 var mockSaveFn = jest.fn((entity: any): Promise<any> => Promise.resolve(entity));
@@ -49,44 +76,69 @@ describe("Paper Trading Environment Certification Test Suite", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.restoreAllMocks();
+    mockWsInstance = null;
     MarketDataReliabilityLayer.reset();
-    MarketDataService.simulatedPrices.clear();
     PriceConsistencyMonitor.reset();
+    
+    // Reset MarketDataService singleton state
+    const service = MarketDataService.getInstance();
+    (service as any).isConnected = false;
+    (service as any).reconnectAttempts = 0;
+    (service as any).ws = null;
+    (service as any).subscribedSymbols = new Set();
+    
     // Re-initialize Reliability Layer
     MarketDataReliabilityLayer.initialize(["INFY"]);
   });
 
-  // Test 1: Simulator startup dynamic initialization success
-  test("1. Simulator should fetch live LTP from Upstox and initialize successfully", async () => {
-    (UpstoxService.getLastTradedPrice as jest.Mock).mockResolvedValue(1118.60);
-
-    const service = MarketDataService.getInstance();
-    // Simulate subscribed symbol list
-    (service as any).subscribedSymbols = new Set(["INFY"]);
-
-    await (service as any).startPaperStream();
-
-    expect(UpstoxService.getLastTradedPrice).toHaveBeenCalledWith("INFY");
-    expect(MarketDataService.simulatedPrices.get("INFY")).toBe(1118.60);
-    expect(MarketDataReliabilityLayer.isTradingPaused()).toBe(false);
-
-    // Stop intervals generated during test
-    (service as any).paperIntervals.forEach(clearInterval);
+  afterAll(() => {
+    MarketDataReliabilityLayer.stop();
+    PriceConsistencyMonitor.stop();
+    PriceEngine.stop();
+    TrailingStopValidator.stopDailyAuditJob();
   });
 
-  // Test 2: Simulator startup dynamic initialization retry and failure handling
-  test("2. Simulator should retry 3 times on LTP fetch failure, pause trading, and trigger alert", async () => {
-    (UpstoxService.getLastTradedPrice as jest.Mock).mockRejectedValue(new Error("Upstox connection timeout"));
+  // Test 1: MarketDataService connection and WebSocket subscription
+  test("1. MarketDataService should authorize and establish real WebSocket connection", async () => {
+    const mockAuthorizeResponse = {
+      data: {
+        data: {
+          authorized_redirect_uri: "wss://api.upstox.com/feed/market-data-feed/ws",
+        },
+      },
+    };
+    (axios.get as jest.Mock).mockResolvedValue(mockAuthorizeResponse);
 
     const service = MarketDataService.getInstance();
-    (service as any).subscribedSymbols = new Set(["INFY"]);
+    await service.connect();
 
-    await (service as any).startPaperStream();
+    expect(axios.get).toHaveBeenCalledWith(
+      "https://api.upstox.com/v3/feed/market-data-feed/authorize",
+      expect.any(Object)
+    );
+    expect(mockWsInstance).not.toBeNull();
+    expect(mockWsInstance.on).toHaveBeenCalledWith("open", expect.any(Function));
+    expect(mockWsInstance.on).toHaveBeenCalledWith("message", expect.any(Function));
 
-    // Verify 3 retries occurred
-    expect(UpstoxService.getLastTradedPrice).toHaveBeenCalledTimes(3);
-    // Verify trading is paused due to simulator failure
-    expect(MarketDataReliabilityLayer.isTradingPaused()).toBe(true);
+    // Simulate websocket open
+    mockWsInstance.listeners["open"]();
+    expect(service.healthCheck().connected).toBe(true);
+  });
+
+  // Test 2: MarketDataService retry on authorization failure
+  test("2. MarketDataService should handle authorization errors gracefully", async () => {
+    (axios.get as jest.Mock).mockRejectedValue(new Error("Auth Token Expired"));
+
+    const service = MarketDataService.getInstance();
+    const reconnectSpy = jest.spyOn(service as any, "reconnect").mockImplementation(() => {});
+
+    // Start connection attempt (will reject and trigger reconnect in try-catch)
+    await service.connect();
+
+    // Verify it attempted to reconnect
+    expect(reconnectSpy).toHaveBeenCalled();
+
+    reconnectSpy.mockRestore();
   });
 
   // Test 3: Position Repair Engine scans and repairs corrupted positions
@@ -96,7 +148,7 @@ describe("Paper Trading Environment Certification Test Suite", () => {
       symbol: "INFY",
       qty: 4,
       avgEntryPrice: 1118.60,
-      peakPrice: 1471.63, // Corrupted peak price (exceeds 1.05 * 1118.60)
+      peakPrice: 1471.63, // Corrupted peak price (exceeds Math.max(avgEntryPrice, ltp) * 1.05)
       trailingStopPrice: 1442.20,
       stopLossPercent: 0.02,
       createdAt: new Date(),
@@ -104,14 +156,14 @@ describe("Paper Trading Environment Certification Test Suite", () => {
     };
 
     mockFindFn.mockResolvedValue([corruptedPosition]);
-    (UpstoxService.getLastTradedPrice as jest.Mock).mockResolvedValue(1118.60); // Real LTP
+    jest.spyOn(PriceEngine, "getLastPrice").mockResolvedValue(1118.60); // Real LTP
 
     const report = await PositionRepairEngine.repairAllActivePositions();
 
     expect(report.corruptedPositionsCount).toBe(1);
     expect(report.repairedPositionsCount).toBe(1);
     
-    // Verify recalculated peak: Math.max(1118.60, 1118.60) = 1118.60
+    // Verify recalculated peak: Math.max(avgEntryPrice, ltp) = 1118.60
     expect(mockSaveFn).toHaveBeenCalled();
     const savedPos = mockSaveFn.mock.calls[0][0];
     expect(savedPos.symbol).toBe("INFY");
@@ -121,9 +173,7 @@ describe("Paper Trading Environment Certification Test Suite", () => {
 
   // Test 4: Price Consistency Monitor detects divergence
   test("4. PriceConsistencyMonitor should halt trading if divergence exceeds 2%", async () => {
-    // Inject prices that diverge
-    jest.spyOn(PriceEngine, "getLastPriceSync").mockReturnValue(1120.00); // Cached
-    MarketDataService.simulatedPrices.set("INFY", 1120.00);               // Simulator
+    jest.spyOn(PriceEngine, "getLastPriceSync").mockReturnValue(1120.00); // Websocket Cached
     (UpstoxService.getLastTradedPrice as jest.Mock).mockResolvedValue(1050.00); // Real REST LTP (~6.6% divergence)
 
     expect(MarketDataReliabilityLayer.isTradingPaused()).toBe(false);
@@ -148,7 +198,7 @@ describe("Paper Trading Environment Certification Test Suite", () => {
     };
 
     mockFindFn.mockResolvedValue([invalidPosition]);
-    (UpstoxService.getLastTradedPrice as jest.Mock).mockResolvedValue(100.00);
+    jest.spyOn(PriceEngine, "getLastPrice").mockResolvedValue(100.00);
 
     const validationResults = await TrailingStopValidator.validatePositions();
 

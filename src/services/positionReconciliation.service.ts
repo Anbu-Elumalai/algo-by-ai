@@ -39,6 +39,28 @@ export class PositionReconciliationService {
     this.cache.clear();
   }
 
+  static async savePosition(position: ActivePosition): Promise<void> {
+    const repo = AppDataSource.getRepository(ActivePosition);
+    await repo.save(position);
+    this.setCachedPosition(position);
+  }
+
+  static async deletePosition(symbol: string): Promise<void> {
+    const sym = symbol.toUpperCase();
+    const repo = AppDataSource.getRepository(ActivePosition);
+    const dbPos = await repo.findOne({ where: { symbol: sym } as any });
+    if (dbPos) {
+      await repo.delete({ _id: dbPos._id });
+    }
+    this.removeCachedPosition(sym);
+  }
+
+  static async clearPositions(): Promise<void> {
+    const repo = AppDataSource.getRepository(ActivePosition);
+    await repo.clear();
+    this.clearCache();
+  }
+
   /**
    * Loads all active positions from MongoDB and populates memory cache
    */

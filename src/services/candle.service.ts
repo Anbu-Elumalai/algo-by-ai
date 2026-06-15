@@ -3,6 +3,9 @@ import { upstoxConfig } from "../config/upstox";
 import { UpstoxBar } from "../strategies/strategyEngine";
 
 export class CandleService {
+  private static syncedCandlesCache = new Map<string, { timestamp: number; data: UpstoxBar[] }>();
+  private static CACHE_TTL_MS = 120000; // 2 minutes cache TTL
+
   private static getHeaders() {
     return {
       "Authorization": `Bearer ${upstoxConfig.accessToken}`,
@@ -125,6 +128,14 @@ export class CandleService {
    * Sync and return a complete chronological history of 15-minute candles (historical + intraday)
    */
   static async getSyncedCandles(symbol: string, historicalDays: number = 5): Promise<UpstoxBar[]> {
+    const sym = symbol.toUpperCase();
+    const now = Date.now();
+    const cached = this.syncedCandlesCache.get(sym);
+
+    if (cached && (now - cached.timestamp < this.CACHE_TTL_MS)) {
+      return cached.data;
+    }
+
     const historical = await this.getHistoricalCandles(symbol, historicalDays);
 
     let intraday: UpstoxBar[] = [];
@@ -136,6 +147,11 @@ export class CandleService {
 
     // Combine and remove overlaps
     const combined = [...historical, ...intraday];
-    return this.validateCandles(combined);
+    const validated = this.validateCandles(combined);
+
+    // Save to cache
+    this.syncedCandlesCache.set(sym, { timestamp: Date.now(), data: validated });
+
+    return validated;
   }
 }

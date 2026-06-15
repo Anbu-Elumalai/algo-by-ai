@@ -100,6 +100,14 @@ AppDataSource.initialize()
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`📄 Swagger documentation: http://localhost:${PORT}/api-docs`);
 
+      // Start Daily Rollover Monitor
+      try {
+        const { DailyRolloverMonitor } = require("./services/risk.service");
+        DailyRolloverMonitor.start();
+      } catch (err: any) {
+        console.error("⚠️ Failed to initialize Daily Rollover Monitor:", err.message);
+      }
+
       // Boot trading bot
       try {
         try {
@@ -119,6 +127,14 @@ AppDataSource.initialize()
     // Graceful Shutdown Implementation
     const gracefulShutdown = async (signal: string) => {
       console.log(`\n🛑 Received ${signal} signal. Initiating graceful shutdown...`);
+
+      // Stop Rollover Monitor
+      try {
+        const { DailyRolloverMonitor } = require("./services/risk.service");
+        DailyRolloverMonitor.stop();
+      } catch (err: any) {
+        console.error("❌ Error stopping Daily Rollover Monitor:", err.message);
+      }
 
       // Stop Trading Loop
       try {

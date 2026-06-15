@@ -17,6 +17,8 @@ import { PriceEngine } from "./PriceEngine";
 import { OrderExecutionManager } from "./OrderExecutionManager";
 import { PositionRecoveryManager } from "./PositionRecoveryManager";
 import { MarketDataReliabilityLayer } from "./MarketDataReliabilityLayer";
+import { PositionReconciliationService } from "./positionReconciliation.service";
+import { TokenManager } from "./TokenManager";
 
 export class TradingLoopService {
   private static isActive = false;
@@ -64,6 +66,8 @@ export class TradingLoopService {
     try {
       // 1. Run Pre-Live Checklist
       const checklist = await PreLiveValidationService.runChecklist(this.targetSymbols);
+      console.log(checklist, 'checklist');
+
       if (!checklist.success) {
         throw new Error("Pre-Live Validation Checklist failed. Trading bot startup aborted.");
       }
@@ -97,6 +101,9 @@ export class TradingLoopService {
       // Initialize Market Data Reliability Layer
       MarketDataReliabilityLayer.initialize(this.targetSymbols);
 
+      // Start Token Lifecycle Monitor
+      TokenManager.startMonitoring();
+
       await NotificationService.sendNotification("BOT STARTED", "Trading bot has successfully started and is monitoring price streams.");
     } catch (err: any) {
       this.isActive = false;
@@ -126,6 +133,7 @@ export class TradingLoopService {
     PriceEngine.removeAllListeners("priceUpdate");
     PositionRecoveryManager.stop();
     MarketDataReliabilityLayer.stop();
+    TokenManager.stopMonitoring();
     console.log("🔌 Trading loop and telemetry deactivated.");
   }
 
@@ -175,10 +183,10 @@ export class TradingLoopService {
       if (dbPos) {
         const slResult = RiskService.checkTrailingStopLoss(dbPos, ltp);
 
-        // Update peak price and trailing stop price in database
+        // Update peak price and trailing stop price in database and cache
         dbPos.peakPrice = slResult.updatedPeak;
         dbPos.trailingStopPrice = slResult.trailingStop;
-        await positionRepo.save(dbPos);
+        await PositionReconciliationService.savePosition(dbPos);
 
         if (slResult.trigger) {
           console.warn(`🚨 [Stop Loss Triggered] Trailing SL breached for ${symbol} via WS tick. Price: ₹${ltp.toFixed(2)}`);
@@ -225,7 +233,7 @@ export class TradingLoopService {
           execLog.executionDelayMs = 150; // Estimate WS roundtrip latency
           await AppDataSource.getRepository(ExecutionLog).save(execLog);
 
-          await positionRepo.delete({ _id: dbPos._id });
+          await PositionReconciliationService.deletePosition(symbol);
           await RiskService.incrementDailyTradeCount();
           await this.logPerformanceSnapshot(account.equity, account.cash + totalAmount - fees, account.buyingPower);
 
@@ -316,7 +324,7 @@ export class TradingLoopService {
               newPos.peakPrice = currentPrice;
               newPos.trailingStopPrice = currentPrice * 0.98;
               newPos.stopLossPercent = 0.02;
-              await positionRepo.save(newPos);
+              await PositionReconciliationService.savePosition(newPos);
 
               const log = new TradeLog();
               log.symbol = symbol;
@@ -398,7 +406,7 @@ export class TradingLoopService {
           execLog.executionDelayMs = 150;
           await AppDataSource.getRepository(ExecutionLog).save(execLog);
 
-          await positionRepo.delete({ _id: dbPos._id });
+          await PositionReconciliationService.deletePosition(symbol);
           await RiskService.incrementDailyTradeCount();
           await this.logPerformanceSnapshot(account.equity, account.cash + totalAmount - fees, account.buyingPower);
 
@@ -447,7 +455,7 @@ export class TradingLoopService {
         }
       }
 
-      await AppDataSource.getRepository(ActivePosition).clear();
+      await PositionReconciliationService.clearPositions();
       await NotificationService.sendNotification("EMERGENCY FORCE EXIT", "All active positions liquidated and bot deactivated.");
 
       return { success: true, liquidations: result };
