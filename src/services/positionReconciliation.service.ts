@@ -43,6 +43,9 @@ export class PositionReconciliationService {
     const repo = AppDataSource.getRepository(ActivePosition);
     await repo.save(position);
     this.setCachedPosition(position);
+    console.log(`[CACHE]
+Position saved
+Cache synchronized immediately`);
   }
 
   static async deletePosition(symbol: string): Promise<void> {
@@ -53,6 +56,9 @@ export class PositionReconciliationService {
       await repo.delete({ _id: dbPos._id });
     }
     this.removeCachedPosition(sym);
+    console.log(`[CACHE]
+Position closed
+Cache synchronized immediately`);
   }
 
   static async clearPositions(): Promise<void> {

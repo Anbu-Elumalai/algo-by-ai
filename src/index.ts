@@ -120,7 +120,8 @@ AppDataSource.initialize()
         await TradingLoopService.start();
         console.log("🤖 Auto-start complete: Live trading loop is active!");
       } catch (err: any) {
-        console.warn("⚠️ Auto-start warning: Failed to initialize trading loop on boot (credentials likely missing):", err.message);
+        console.error("❌ CRITICAL: Failed to initialize trading loop on boot:", err.message);
+        process.exit(1);
       }
     });
 

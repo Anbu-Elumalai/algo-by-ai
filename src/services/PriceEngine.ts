@@ -29,6 +29,20 @@ export class PriceEngine {
       const sym = symbol.toUpperCase();
       this.prices.set(sym, ltp);
       this.lastTickTimes.set(sym, Date.now());
+      
+      console.log(`[PRICE ENGINE]
+${sym} updated to ₹${ltp.toFixed(2)}
+Age=0ms
+Health=HEALTHY`);
+
+      // Update Live Candle in CandleService
+      try {
+        const { CandleService } = require("./candle.service");
+        CandleService.updateLiveCandle(sym, ltp);
+      } catch (err: any) {
+        console.warn("⚠️ Failed to update live candle in CandleService:", err.message);
+      }
+
       this.emitter.emit("priceUpdate", { symbol: sym, ltp });
     });
 
@@ -94,6 +108,13 @@ export class PriceEngine {
    */
   static getLastPriceSync(symbol: string): number {
     return this.prices.get(symbol.toUpperCase()) || 0;
+  }
+
+  /**
+   * Alias for sync price fetch from in-memory cache
+   */
+  static getPrice(symbol: string): number {
+    return this.getLastPriceSync(symbol);
   }
 
   /**

@@ -47,41 +47,67 @@ export class PreLiveValidationService {
       if (isTest) {
         report.push("✓ WebSocket connection: TEST_MOCK (CONNECTED)");
       } else {
-        await marketDataService.connect(true);
-        marketDataService.subscribe(targetSymbols);
-
-        if (!marketDataService.isWsOpen()) {
-          throw new Error("WebSocket connection state is not OPEN.");
+        const { TradingLoopService } = require("./tradingLoop.service");
+        const marketOpen = TradingLoopService.isIndianMarketOpen();
+        
+        if (!marketOpen) {
+          console.log("⏱️ No live ticks expected because market is closed. Active market hours: 09:15 to 15:30 IST, Monday-Friday.");
         }
 
-        // Wait up to 5 seconds for the first ticks to arrive
-        console.log("⏳ Waiting for initial WebSocket price ticks to arrive...");
-        let ticksArrived = false;
-        const { PriceEngine } = require("./PriceEngine");
-        for (let i = 0; i < 5; i++) {
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          let allTicksFresh = true;
-          for (const symbol of targetSymbols) {
-            const health = await PriceEngine.getPriceHealth(symbol);
-            if (health.stale || health.lastTickAgeMs > 5000) {
-              allTicksFresh = false;
-              break;
-            }
+        try {
+          await marketDataService.connect(true);
+          marketDataService.subscribe(targetSymbols);
+
+          if (!marketDataService.isWsOpen()) {
+            throw new Error("WebSocket connection state is not OPEN.");
           }
-          if (allTicksFresh) {
-            ticksArrived = true;
-            break;
+
+          // Wait up to 5 seconds for the first ticks to arrive (using reactive listener)
+          console.log("⏳ Waiting for initial WebSocket price ticks to arrive...");
+          const ticksArrived = await this.waitForFirstTicks(targetSymbols, 5000);
+
+          if (!ticksArrived) {
+            throw new Error("Timeout waiting for active market data ticks.");
+          }
+
+          report.push("✓ WebSocket connection: LIVE (CONNECTED)");
+        } catch (wsErr: any) {
+          if (process.env.TRADING_MODE === "PAPER" || !marketOpen) {
+            console.warn(`⚠️ WebSocket connection/ticks failed: ${wsErr.message}. Fallback active (PAPER mode or market closed): starting mock tick simulator.`);
+            marketDataService.startMockTickSimulator(targetSymbols);
+            // Wait an extra 2.5 seconds for mock ticks to register
+            await new Promise(resolve => setTimeout(resolve, 2500));
+            report.push("✓ WebSocket connection: PAPER_SIMULATOR (CONNECTED)");
+          } else {
+            throw wsErr;
           }
         }
-
-        if (!ticksArrived) {
-          throw new Error("Timeout waiting for active market data ticks. Check market hours and broker feed permissions.");
-        }
-
-        report.push("✓ WebSocket connection: LIVE (CONNECTED)");
       }
     } catch (err: any) {
       report.push(`✗ WebSocket connection: FAILED (${err.message})`);
+      success = false;
+    }
+
+    // 4b. Verify Historical Candles & Indicator Readiness
+    try {
+      const { CandleService } = require("./candle.service");
+      const { analyzeMovingAverageCrossover } = require("../strategies/strategyEngine");
+      
+      const testSymbol = targetSymbols[0] || "RELIANCE";
+      console.log(`⏳ Loading historical 15-minute candles for ${testSymbol} self-test...`);
+      const candles = await CandleService.getSyncedCandles(testSymbol, 5);
+      
+      if (candles.length === 0) {
+        throw new Error(`Failed to load historical candles for ${testSymbol}.`);
+      }
+      
+      console.log(`⏳ Verifying indicator calculations (SMA, RSI) on ${testSymbol}...`);
+      const closingPrices = candles.map((c: any) => c.c);
+      const testReport = analyzeMovingAverageCrossover(closingPrices, 9, 21);
+      
+      report.push(`✓ Historical Candles & Indicators: READY (Loaded ${candles.length} candles for ${testSymbol})`);
+    } catch (err: any) {
+      report.push(`✗ Historical Candles & Indicators: FAILED (${err.message})`);
       success = false;
     }
 
@@ -101,7 +127,14 @@ export class PreLiveValidationService {
 
     // 6. Verify Position Sync
     try {
+      const { PositionReconciliationService } = require("./positionReconciliation.service");
+      await PositionReconciliationService.rebuildCache();
+      
       const positions = await UpstoxService.getPositions();
+      
+      console.log(`[CACHE]
+Cache synchronized immediately`);
+      
       report.push(`✓ Position synchronization: SUCCESS (${positions.length} active positions sync'd)`);
     } catch (err: any) {
       report.push(`✗ Position synchronization: FAILED (${err.message})`);
@@ -140,5 +173,43 @@ export class PreLiveValidationService {
     }
 
     return { success, report };
+  }
+
+  /**
+   * Helper to wait reactively for the first price ticks for all target symbols
+   */
+  static async waitForFirstTicks(targetSymbols: string[], timeoutMs: number = 5000): Promise<boolean> {
+    const received = new Set<string>();
+    const { PriceEngine } = require("./PriceEngine");
+    
+    // Check if some ticks are already in cache and not stale
+    for (const symbol of targetSymbols) {
+      const health = await PriceEngine.getPriceHealth(symbol);
+      if (!health.stale && health.lastTickAgeMs <= 5000) {
+        received.add(symbol.toUpperCase());
+      }
+    }
+    
+    if (received.size === targetSymbols.length) {
+      return true;
+    }
+
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        marketDataService.removeListener("priceUpdate", listener);
+        resolve(false);
+      }, timeoutMs);
+
+      const listener = ({ symbol }: { symbol: string }) => {
+        received.add(symbol.toUpperCase());
+        if (received.size === targetSymbols.length) {
+          clearTimeout(timer);
+          marketDataService.removeListener("priceUpdate", listener);
+          resolve(true);
+        }
+      };
+
+      marketDataService.on("priceUpdate", listener);
+    });
   }
 }

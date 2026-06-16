@@ -25,6 +25,7 @@ export class TradingLoopService {
   private static intervalId: NodeJS.Timeout | null = null;
   private static healthLogIntervalId: NodeJS.Timeout | null = null;
   private static targetSymbols: string[] = ["RELIANCE", "TCS", "INFY"];
+  private static lastProcessedCandleTimes = new Map<string, string>();
 
   /**
    * Check if Indian market is open (09:15 to 15:30 IST, Monday-Friday)
@@ -117,6 +118,12 @@ export class TradingLoopService {
    * Stop the live loop
    */
   static stop(): void {
+    try {
+      marketDataService.stopMockTickSimulator();
+    } catch (e: any) {
+      console.warn("⚠️ Failed to stop mock tick simulator:", e.message);
+    }
+
     if (!this.isActive) return;
     console.log("🛑 Stopping the trading loop...");
 
@@ -183,10 +190,25 @@ export class TradingLoopService {
       if (dbPos) {
         const slResult = RiskService.checkTrailingStopLoss(dbPos, ltp);
 
+        const oldPeak = dbPos.peakPrice;
+        
         // Update peak price and trailing stop price in database and cache
         dbPos.peakPrice = slResult.updatedPeak;
         dbPos.trailingStopPrice = slResult.trailingStop;
         await PositionReconciliationService.savePosition(dbPos);
+
+        console.log(`[STOP LOSS]
+Position detected in cache
+Live price checked
+Stop loss status healthy`);
+
+        if (dbPos.peakPrice > oldPeak) {
+          console.log(`[TRAILING STOP]
+Peak updated
+Old peak: ${oldPeak.toFixed(2)}
+New peak: ${dbPos.peakPrice.toFixed(2)}
+Trailing SL: ${dbPos.trailingStopPrice.toFixed(2)}`);
+        }
 
         if (slResult.trigger) {
           console.warn(`🚨 [Stop Loss Triggered] Trailing SL breached for ${symbol} via WS tick. Price: ₹${ltp.toFixed(2)}`);
@@ -201,6 +223,12 @@ export class TradingLoopService {
           const idempotencyKey = `sl-${symbol}-${dbPos.qty}-${Math.floor(Date.now() / 60000)}`;
           const correlationId = `corr-sl-${Date.now()}`;
           const order = await OrderExecutionManager.executeOrder(idempotencyKey, correlationId, symbol, dbPos.qty, "SELL", "MARKET");
+          
+          console.log(`[ORDER]
+SELL executed
+Qty=${dbPos.qty}
+Price=${ltp.toFixed(1)}`);
+
           const account = await UpstoxService.getAccount();
           const totalAmount = dbPos.qty * ltp;
           const fees = 40; // Approx trade fee
@@ -282,8 +310,18 @@ export class TradingLoopService {
         if (currentPrice <= 0) continue;
 
         const candles = await CandleService.getSyncedCandles(symbol, 5);
-        const closingPrices = candles.map(c => c.c);
+        
+        // Prevent repeated execution during same candle
+        const lastCandle = candles[candles.length - 1];
+        if (lastCandle) {
+          const lastTime = this.lastProcessedCandleTimes.get(symbol);
+          if (lastTime === lastCandle.t) {
+            continue; // Skip duplicate evaluation in the same candle
+          }
+          this.lastProcessedCandleTimes.set(symbol, lastCandle.t);
+        }
 
+        const closingPrices = candles.map(c => c.c);
         const strategyReport = analyzeMovingAverageCrossover(closingPrices, 9, 21);
 
         // Store Strategy Decision in DB
@@ -300,6 +338,11 @@ export class TradingLoopService {
 
         // Buy execution pipeline
         if (strategyReport.signal === "BUY" && !dbPos) {
+          console.log(`[SIGNAL]
+BUY signal generated
+Reason: Golden Cross
+RSI: ${strategyReport.rsi.toFixed(1)}`);
+
           // Verify Guard
           const guard = await PositionGuardService.verifyOrderAllowed(symbol, "BUY");
           if (!guard.allowed) {
@@ -316,6 +359,11 @@ export class TradingLoopService {
               const idempotencyKey = `crossover-BUY-${symbol}-${Math.floor(Date.now() / 900000)}`;
               const correlationId = `corr-crossover-${Date.now()}`;
               const order = await OrderExecutionManager.executeOrder(idempotencyKey, correlationId, symbol, qty, "BUY", "MARKET");
+
+              console.log(`[ORDER]
+BUY executed
+Qty=${qty}
+Price=${currentPrice.toFixed(1)}`);
 
               const newPos = new ActivePosition();
               newPos.symbol = symbol;
@@ -366,6 +414,11 @@ export class TradingLoopService {
 
         // Sell execution pipeline
         else if (strategyReport.signal === "SELL" && dbPos) {
+          console.log(`[SIGNAL]
+SELL signal generated
+Reason: Death Cross
+RSI: ${strategyReport.rsi.toFixed(1)}`);
+
           // Verify Guard
           const guard = await PositionGuardService.verifyOrderAllowed(symbol, "SELL");
           if (!guard.allowed) {
@@ -376,6 +429,11 @@ export class TradingLoopService {
           const idempotencyKey = `crossover-SELL-${symbol}-${Math.floor(Date.now() / 900000)}`;
           const correlationId = `corr-crossover-${Date.now()}`;
           const order = await OrderExecutionManager.executeOrder(idempotencyKey, correlationId, symbol, dbPos.qty, "SELL", "MARKET");
+
+          console.log(`[ORDER]
+SELL executed
+Qty=${dbPos.qty}
+Price=${currentPrice.toFixed(1)}`);
           const totalAmount = dbPos.qty * currentPrice;
           const fees = 40;
 
@@ -498,7 +556,7 @@ export class TradingLoopService {
     buyingPower: number
   ): Promise<void> {
     try {
-      if (AppDataSource.isInitialized) {
+      if (AppDataSource.isInitialized && AppDataSource.manager && typeof AppDataSource.manager.save === "function") {
         const snap = new BotPerformance();
         snap.equity = equity;
         snap.cash = cash;

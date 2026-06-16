@@ -74,7 +74,8 @@ export class TrailingStopValidator {
 
             // 1. Mark position invalid (Write to DB)
             pos.isInvalid = true;
-            await positionRepo.save(pos);
+            const { PositionReconciliationService } = require("./positionReconciliation.service");
+            await PositionReconciliationService.savePosition(pos);
 
             // 2. Trigger investigation alert
             const alertMsg = `Position integrity validation failed for ${pos.symbol}.\n\n` +

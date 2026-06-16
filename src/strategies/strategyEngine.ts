@@ -95,6 +95,11 @@ export function analyzeMovingAverageCrossover(
 
   const currentRsi = calculateRSI(prices, 14);
 
+  console.log(`[INDICATORS]
+Fast SMA: ${currentFastSma.toFixed(2)}
+Slow SMA: ${currentSlowSma.toFixed(2)}
+RSI: ${currentRsi.toFixed(2)}`);
+
   const debugMessage = `Fast SMA: ${currentFastSma.toFixed(2)}, Slow SMA: ${currentSlowSma.toFixed(2)}, RSI: ${currentRsi.toFixed(2)}`;
 
   // Golden Cross (Buy signal)

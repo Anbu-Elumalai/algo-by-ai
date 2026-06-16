@@ -73,17 +73,20 @@ export class OrderLifecycleManager {
             dbPos.trailingStopPrice = newAvgPrice * (1 - dbPos.stopLossPercent);
           }
         }
-        await positionRepo.save(dbPos);
+        const { PositionReconciliationService } = require("./positionReconciliation.service");
+        await PositionReconciliationService.savePosition(dbPos);
         console.log(`📈 Position BUY update for ${order.symbol}: Qty=${dbPos.qty}, AvgPrice=₹${dbPos.avgEntryPrice.toFixed(2)}`);
       } else if (order.side === "SELL") {
         if (dbPos) {
           const newQty = Math.max(0, dbPos.qty - update.filledQty);
           if (newQty === 0) {
-            await positionRepo.delete({ _id: dbPos._id });
+            const { PositionReconciliationService } = require("./positionReconciliation.service");
+            await PositionReconciliationService.deletePosition(order.symbol);
             console.log(`📉 Position SELL update for ${order.symbol}: Position fully closed.`);
           } else {
             dbPos.qty = newQty;
-            await positionRepo.save(dbPos);
+            const { PositionReconciliationService } = require("./positionReconciliation.service");
+            await PositionReconciliationService.savePosition(dbPos);
             console.log(`📉 Position SELL update for ${order.symbol}: Remaining Qty=${dbPos.qty}`);
           }
         }

@@ -94,7 +94,8 @@ export class PositionRepairEngine {
             pos.isInvalid = false; // Reset invalid flag if it was set
             
             // 4. Save repaired state
-            await positionRepo.save(pos);
+            const { PositionReconciliationService } = require("./positionReconciliation.service");
+            await PositionReconciliationService.savePosition(pos);
             item.repaired = true;
             report.repairedPositionsCount++;
 

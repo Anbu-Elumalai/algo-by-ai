@@ -65,6 +65,13 @@ export class RiskService {
     tracker.currentEquity = currentEquity;
     await repo.save(tracker);
 
+    const diffPercent = ((currentEquity - tracker.startingEquity) / tracker.startingEquity) * 100;
+    const sign = diffPercent >= 0 ? "+" : "";
+    console.log(`[RISK]
+Starting Equity: ₹${tracker.startingEquity.toFixed(0)}
+Current Equity: ₹${currentEquity.toFixed(0)}
+Drawdown: ${sign}${diffPercent.toFixed(2)}%`);
+
     if (tracker.isHalted) {
       console.warn(`🚨 RISK BREACH HALT: ${breachReason}`);
       return false; // Risk limit breached, halt execution

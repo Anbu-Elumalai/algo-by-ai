@@ -18,6 +18,8 @@ export class MarketDataService extends EventEmitter {
   private feedResponseType: protobuf.Type | null = null;
   private heartbeatInterval: NodeJS.Timeout | null = null;
   private mode: "PAPER" | "LIVE" = "PAPER";
+  private mockTickInterval: NodeJS.Timeout | null = null;
+  private mockPrices = new Map<string, number>();
 
   private constructor() {
     super();
@@ -177,8 +179,13 @@ export class MarketDataService extends EventEmitter {
 
   private setupPersistentListeners(wsInstance: WebSocket) {
     wsInstance.on("message", (data: Buffer) => {
+      // SECTION 3: RAW WEBSOCKET FRAME AUDIT
+      const isBuffer = Buffer.isBuffer(data);
+      console.log(`📨 RAW FRAME RECEIVED | Size=${data.length} bytes | Type=${isBuffer ? "Buffer (Binary)" : typeof data} | Hex Preview=${isBuffer ? data.slice(0, 10).toString("hex") : ""}`);
+
       try {
         if (this.feedResponseType) {
+          // SECTION 4: PROTOBUF DECODER VALIDATION
           const message = this.feedResponseType.decode(data);
           const obj = this.feedResponseType.toObject(message, {
             longs: String,
@@ -186,14 +193,22 @@ export class MarketDataService extends EventEmitter {
             bytes: String
           });
 
+          const feedsCount = obj.feeds ? Object.keys(obj.feeds).length : 0;
+          console.log(`✅ Decoded Message: Feeds count = ${feedsCount}`);
+
           if (obj.feeds) {
             for (const [key, feed] of Object.entries(obj.feeds)) {
               const ltp = (feed as any).ltpc?.ltp || (feed as any).fullFeed?.ltpc?.ltp;
+              const symbol = this.getSymbolFromToken(key);
+              console.log(`   - Instrument Key: ${key} | Symbol: ${symbol} | LTP: ${ltp}`);
               if (ltp !== undefined) {
-                this.emit("priceUpdate", { symbol: this.getSymbolFromToken(key), ltp });
+                console.log(`📈 Tick received: Symbol=${symbol} | Price=₹${ltp}`);
+                this.emit("priceUpdate", { symbol, ltp });
               }
             }
           }
+        } else {
+          console.warn("⚠️ feedResponseType is not initialized. Cannot decode frame.");
         }
       } catch (e: any) {
         console.error("❌ Failed to decode incoming WebSocket binary frame:", e.message);
@@ -244,7 +259,28 @@ export class MarketDataService extends EventEmitter {
     if (!this.isConnected) return;
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      const keys = symbols.map(sym => upstoxConfig.getInstrumentToken(sym));
+      // Validate instrument keys
+      const keys: string[] = [];
+      for (const sym of symbols) {
+        try {
+          const key = upstoxConfig.getInstrumentToken(sym);
+          if (!key || typeof key !== "string" || key.trim() === "") {
+            console.error(`❌ Invalid instrument token resolved for symbol '${sym}':`, key);
+            continue;
+          }
+          keys.push(key);
+        } catch (e: any) {
+          console.error(`❌ Failed to resolve instrument token for symbol '${sym}':`, e.message);
+        }
+      }
+
+      console.log("Instrument Keys:", keys);
+
+      if (keys.length === 0) {
+        console.warn("⚠️ Subscription skipped: No valid instrument keys resolved.");
+        return;
+      }
+
       const subPayload = {
         guid: "sub-guid-123",
         method: "sub",
@@ -254,7 +290,10 @@ export class MarketDataService extends EventEmitter {
         }
       };
 
-      this.ws.send(Buffer.from(JSON.stringify(subPayload)));
+      const payloadString = JSON.stringify(subPayload);
+      console.log("Exact payload sent:", payloadString);
+
+      this.ws.send(Buffer.from(payloadString, "utf-8"));
       console.log(`📡 WebSocket subscription sent for: ${symbols.join(", ")}`);
     }
   }
@@ -303,6 +342,52 @@ export class MarketDataService extends EventEmitter {
       mode: this.mode,
       subscriptions: Array.from(this.subscribedSymbols)
     };
+  }
+
+  startMockTickSimulator(symbols: string[]): void {
+    if (this.mockTickInterval) return;
+    console.log("🎮 Starting PAPER mock tick simulator...");
+
+    const { UpstoxService } = require("./upstox.service");
+    for (const symbol of symbols) {
+      const sym = symbol.toUpperCase();
+      UpstoxService.getLastTradedPrice(sym)
+        .then((ltp: number) => {
+          if (ltp > 0) {
+            this.mockPrices.set(sym, ltp);
+            this.emit("priceUpdate", { symbol: sym, ltp });
+          }
+        })
+        .catch((err: any) => {
+          console.warn(`⚠️ Failed to seed mock price for ${symbol} via REST, using static fallback:`, err.message);
+          this.mockPrices.set(sym, 1000.0);
+          this.emit("priceUpdate", { symbol: sym, ltp: 1000.0 });
+        });
+    }
+
+    this.mockTickInterval = setInterval(() => {
+      for (const symbol of symbols) {
+        const sym = symbol.toUpperCase();
+        let price = this.mockPrices.get(sym);
+        if (price === undefined || price <= 0) {
+          price = 1000.0;
+        }
+        // Small random walk: -0.05% to +0.05%
+        const percentChange = (Math.random() - 0.5) * 0.001; // Max 0.05% change
+        const nextPrice = price * (1 + percentChange);
+        const roundedPrice = parseFloat(nextPrice.toFixed(2));
+        this.mockPrices.set(sym, roundedPrice);
+        this.emit("priceUpdate", { symbol: sym, ltp: roundedPrice });
+      }
+    }, 2000);
+  }
+
+  stopMockTickSimulator(): void {
+    if (this.mockTickInterval) {
+      clearInterval(this.mockTickInterval);
+      this.mockTickInterval = null;
+      console.log("🎮 PAPER mock tick simulator stopped.");
+    }
   }
 
   // Paper stream removed in favor of real market data feed
