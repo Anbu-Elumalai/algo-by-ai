@@ -129,33 +129,49 @@ export class CandleService {
   /**
    * Sync and return a complete chronological history of 15-minute candles (historical + intraday)
    */
-  static async getSyncedCandles(symbol: string, historicalDays: number = 5): Promise<UpstoxBar[]> {
+  static async getSyncedCandles(
+    symbol: string,
+    historicalDays: number = 5
+  ): Promise<UpstoxBar[]> {
     const sym = symbol.toUpperCase();
     const now = Date.now();
+
     const cached = this.syncedCandlesCache.get(sym);
 
-    if (cached && (now - cached.timestamp < this.CACHE_TTL_MS)) {
+    // Return cache only if it contains meaningful history
+    if (
+      cached &&
+      (now - cached.timestamp < this.CACHE_TTL_MS) &&
+      cached.data.length >= 20
+    ) {
       return cached.data;
     }
 
-    const historical = await this.getHistoricalCandles(symbol, historicalDays);
+    console.log(`📥 Loading candle history for ${sym}...`);
+
+    const historical = await this.getHistoricalCandles(sym, historicalDays);
 
     let intraday: UpstoxBar[] = [];
+
     try {
-      intraday = await this.getIntradayCandles(symbol);
+      intraday = await this.getIntradayCandles(sym);
     } catch (err: any) {
-      console.warn(`⚠️ Failed to fetch intraday candles for ${symbol}, relying on historical only:`, err.message);
+      console.warn(
+        `⚠️ Intraday fetch failed for ${sym}, using historical candles only`
+      );
     }
 
-    // Combine and remove overlaps
     const combined = [...historical, ...intraday];
 
-    // Merge the live candle if one exists in memory
     const liveCandle = this.liveCandles.get(sym);
+
     if (liveCandle) {
-      const index = combined.findIndex(c => c.t === liveCandle.t);
-      if (index !== -1) {
-        combined[index] = { ...liveCandle };
+      const existingIndex = combined.findIndex(
+        c => c.t === liveCandle.t
+      );
+
+      if (existingIndex >= 0) {
+        combined[existingIndex] = { ...liveCandle };
       } else {
         combined.push({ ...liveCandle });
       }
@@ -163,8 +179,14 @@ export class CandleService {
 
     const validated = this.validateCandles(combined);
 
-    // Save to cache
-    this.syncedCandlesCache.set(sym, { timestamp: Date.now(), data: validated });
+    this.syncedCandlesCache.set(sym, {
+      timestamp: Date.now(),
+      data: validated,
+    });
+
+    console.log(
+      `✅ ${sym}: ${validated.length} candles loaded`
+    );
 
     return validated;
   }
@@ -174,53 +196,56 @@ export class CandleService {
    */
   static updateLiveCandle(symbol: string, price: number): void {
     const sym = symbol.toUpperCase();
-    const nowObj = new Date();
-    
-    // Determine the 15-minute floor timestamp for the current tick
-    const minutes = nowObj.getMinutes();
-    const floorMinutes = Math.floor(minutes / 15) * 15;
-    const candleDate = new Date(nowObj);
-    candleDate.setMinutes(floorMinutes);
-    candleDate.setSeconds(0);
-    candleDate.setMilliseconds(0);
-    const candleTimeStr = candleDate.toISOString();
 
-    let currentLive = this.liveCandles.get(sym);
+    const now = new Date();
 
-    if (!currentLive || currentLive.t !== candleTimeStr) {
-      // Finalize previous live candle in history first
-      if (currentLive) {
-        this.mergeLiveCandleIntoHistory(sym, currentLive);
+    const floorMinute = Math.floor(now.getMinutes() / 15) * 15;
+
+    const candleStart = new Date(now);
+
+    candleStart.setMinutes(floorMinute);
+    candleStart.setSeconds(0);
+    candleStart.setMilliseconds(0);
+
+    const candleTime = candleStart.toISOString();
+
+    let live = this.liveCandles.get(sym);
+
+    if (!live || live.t !== candleTime) {
+      if (live) {
+        this.mergeLiveCandleIntoHistory(sym, live);
       }
-      
-      // Initialize a new candle
-      currentLive = {
-        t: candleTimeStr,
+
+      live = {
+        t: candleTime,
         o: price,
         h: price,
         l: price,
         c: price,
-        v: 1
+        v: 1,
       };
-      this.liveCandles.set(sym, currentLive);
+
+      this.liveCandles.set(sym, live);
     } else {
-      // Update the OHLC values of the existing candle
-      currentLive.h = Math.max(currentLive.h, price);
-      currentLive.l = Math.min(currentLive.l, price);
-      currentLive.c = price;
-      currentLive.v += 1;
+      live.h = Math.max(live.h, price);
+      live.l = Math.min(live.l, price);
+      live.c = price;
+      live.v += 1;
     }
 
-    // Immediately merge the live candle into the synchronized candle cache
-    this.mergeLiveCandleIntoHistory(sym, currentLive);
+    this.mergeLiveCandleIntoHistory(sym, live);
 
-    const cached = this.syncedCandlesCache.get(sym);
-    const historyCount = cached ? cached.data.filter(c => c.t !== currentLive!.t).length : 0;
+    const cache = this.syncedCandlesCache.get(sym);
 
-    console.log(`[CANDLE ENGINE]
+    const historyCount =
+      cache?.data.filter(c => c.t !== live!.t).length || 0;
+
+    console.log(`
+[CANDLE ENGINE]
 ${sym}
 Historical candles: ${historyCount}
-Live candle merged successfully`);
+Live candle merged successfully
+`);
   }
 
   private static mergeLiveCandleIntoHistory(symbol: string, liveCandle: UpstoxBar): void {
@@ -237,7 +262,7 @@ Live candle merged successfully`);
       cached.data.push({ ...liveCandle });
       cached.data.sort((a, b) => new Date(a.t).getTime() - new Date(b.t).getTime());
     }
-    
+
     // Update timestamp to refresh cache TTL
     cached.timestamp = Date.now();
   }

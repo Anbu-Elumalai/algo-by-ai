@@ -4,6 +4,7 @@ import { HealthService } from "./health.service";
 import { AppDataSource } from "../data-source";
 import { TradeLog } from "../entity/TradeLog";
 import { ActivePosition } from "../entity/ActivePosition";
+import { PaperBrokerPosition } from "../entity/PaperBrokerPosition";
 
 export interface UpstoxAccount {
   equity: number;
@@ -156,36 +157,44 @@ export class UpstoxService {
   }
 
   /**
-   * Fetch active intraday/delivery holdings
+   * Fetch active intraday/delivery holdings.
+   * In PAPER mode, reads from the independent `paper_broker_positions` collection
+   * so that the reconciliation engine can detect divergences between the bot's
+   * `active_positions` and the simulated broker's state.
    */
   static async getPositions(): Promise<UpstoxPosition[]> {
-    // In paper trading mode, positions are fetched from the database ActivePosition collection cache
     if (process.env.TRADING_MODE === "PAPER") {
       try {
-        const repo = AppDataSource.getRepository(ActivePosition);
-        const openPositions = await repo.find();
+        const repo = AppDataSource.getRepository(PaperBrokerPosition);
+        const brokerPositions = await repo.find();
 
         const formatted: UpstoxPosition[] = [];
-        for (const pos of openPositions) {
-          let currentPrice = pos.avgEntryPrice;
+        for (const pos of brokerPositions) {
+          let currentPrice = pos.currentPrice || pos.avgEntryPrice;
           try {
             const { PriceEngine } = require("./PriceEngine");
-            currentPrice = await PriceEngine.getLastPrice(pos.symbol);
+            const ltp = await PriceEngine.getLastPrice(pos.symbol);
+            if (ltp > 0) {
+              currentPrice = ltp;
+              // Keep currentPrice fresh in the broker record
+              pos.currentPrice = ltp;
+              pos.unrealizedPl = (ltp - pos.avgEntryPrice) * pos.qty;
+              await repo.save(pos);
+            }
           } catch {
-            // Keep average entry
+            // Keep stored currentPrice as fallback
           }
-          const unrealized = (currentPrice - pos.avgEntryPrice) * pos.qty;
           formatted.push({
             symbol: pos.symbol,
             qty: pos.qty,
             avgEntryPrice: pos.avgEntryPrice,
             currentPrice: currentPrice,
-            unrealizedPl: unrealized,
+            unrealizedPl: pos.unrealizedPl,
           });
         }
         return formatted;
       } catch (err: any) {
-        console.error("❌ Failed to fetch paper positions from DB:", err.message);
+        console.error("❌ Failed to fetch paper broker positions from DB:", err.message);
         return [];
       }
     }
@@ -237,10 +246,64 @@ export class UpstoxService {
     orderType: "MARKET" | "LIMIT" = "MARKET",
     price?: number
   ): Promise<any> {
-    // Intercept if in PAPER trading mode
+    // Intercept if in PAPER trading mode — maintain an independent PaperBrokerPosition record
     if (process.env.TRADING_MODE === "PAPER") {
-      console.log(`📝 [PAPER TRADE] Simulating ${side} order: ${qty} shares of ${symbol}`);
       const mockOrderId = `paper-order-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      const sym = symbol.toUpperCase();
+      console.log(`📝 [PAPER TRADE] Simulating ${side} order: ${qty} shares of ${sym}`);
+
+      try {
+        const repo = AppDataSource.getRepository(PaperBrokerPosition);
+        let currentPx = price || 0;
+        try {
+          const { PriceEngine } = require("./PriceEngine");
+          const ltp = await PriceEngine.getLastPrice(sym);
+          if (ltp > 0) currentPx = ltp;
+        } catch { /* use provided price */ }
+
+        if (side === "BUY") {
+          // Create or accumulate broker position
+          const existing = await repo.findOne({ where: { symbol: sym } as any });
+          if (existing) {
+            // Weighted average entry price
+            const totalCost = existing.avgEntryPrice * existing.qty + currentPx * qty;
+            existing.qty += qty;
+            existing.avgEntryPrice = totalCost / existing.qty;
+            existing.currentPrice = currentPx;
+            existing.unrealizedPl = (currentPx - existing.avgEntryPrice) * existing.qty;
+            existing.brokerOrderId = mockOrderId;
+            await repo.save(existing);
+          } else {
+            const newPos = new PaperBrokerPosition();
+            newPos.symbol = sym;
+            newPos.qty = qty;
+            newPos.avgEntryPrice = currentPx;
+            newPos.currentPrice = currentPx;
+            newPos.unrealizedPl = 0;
+            newPos.brokerOrderId = mockOrderId;
+            await repo.save(newPos);
+          }
+          console.log(`📝 [PAPER BROKER] BUY recorded: ${qty} x ${sym} @ ₹${currentPx.toFixed(2)}`);
+        } else if (side === "SELL") {
+          // Remove or decrement broker position
+          const existing = await repo.findOne({ where: { symbol: sym } as any });
+          if (existing) {
+            if (existing.qty <= qty) {
+              await repo.delete({ _id: existing._id });
+            } else {
+              existing.qty -= qty;
+              existing.currentPrice = currentPx;
+              existing.unrealizedPl = (currentPx - existing.avgEntryPrice) * existing.qty;
+              existing.brokerOrderId = mockOrderId;
+              await repo.save(existing);
+            }
+          }
+          console.log(`📝 [PAPER BROKER] SELL recorded: ${qty} x ${sym} @ ₹${currentPx.toFixed(2)}`);
+        }
+      } catch (paperErr: any) {
+        console.error("❌ Failed to update paper broker position:", paperErr.message);
+      }
+
       return {
         order_id: mockOrderId,
         status: "success",

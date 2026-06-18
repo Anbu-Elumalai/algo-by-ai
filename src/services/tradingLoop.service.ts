@@ -118,12 +118,6 @@ export class TradingLoopService {
    * Stop the live loop
    */
   static stop(): void {
-    try {
-      marketDataService.stopMockTickSimulator();
-    } catch (e: any) {
-      console.warn("⚠️ Failed to stop mock tick simulator:", e.message);
-    }
-
     if (!this.isActive) return;
     console.log("🛑 Stopping the trading loop...");
 

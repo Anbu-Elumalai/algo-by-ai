@@ -18,8 +18,8 @@ export class MarketDataService extends EventEmitter {
   private feedResponseType: protobuf.Type | null = null;
   private heartbeatInterval: NodeJS.Timeout | null = null;
   private mode: "PAPER" | "LIVE" = "PAPER";
-  private mockTickInterval: NodeJS.Timeout | null = null;
-  private mockPrices = new Map<string, number>();
+  // private mockTickInterval: NodeJS.Timeout | null = null;
+  // private mockPrices = new Map<string, number>();
 
   private constructor() {
     super();
@@ -92,7 +92,7 @@ export class MarketDataService extends EventEmitter {
       if (awaitConnection) {
         await new Promise<void>((resolvePromise, rejectPromise) => {
           const timeoutId = setTimeout(() => {
-            wsInstance.on("error", () => {}); // Swallow connection abort errors on close
+            wsInstance.on("error", () => { }); // Swallow connection abort errors on close
             cleanupHandshake();
             wsInstance.close();
             rejectPromise(new Error("WebSocket connection timed out after 10 seconds."));
@@ -180,6 +180,7 @@ export class MarketDataService extends EventEmitter {
   private setupPersistentListeners(wsInstance: WebSocket) {
     wsInstance.on("message", (data: Buffer) => {
       // SECTION 3: RAW WEBSOCKET FRAME AUDIT
+      console.log("📨 RAW FRAME RECEIVED", data.length);
       const isBuffer = Buffer.isBuffer(data);
       console.log(`📨 RAW FRAME RECEIVED | Size=${data.length} bytes | Type=${isBuffer ? "Buffer (Binary)" : typeof data} | Hex Preview=${isBuffer ? data.slice(0, 10).toString("hex") : ""}`);
 
@@ -344,53 +345,12 @@ export class MarketDataService extends EventEmitter {
     };
   }
 
-  startMockTickSimulator(symbols: string[]): void {
-    if (this.mockTickInterval) return;
-    console.log("🎮 Starting PAPER mock tick simulator...");
 
-    const { UpstoxService } = require("./upstox.service");
-    for (const symbol of symbols) {
-      const sym = symbol.toUpperCase();
-      UpstoxService.getLastTradedPrice(sym)
-        .then((ltp: number) => {
-          if (ltp > 0) {
-            this.mockPrices.set(sym, ltp);
-            this.emit("priceUpdate", { symbol: sym, ltp });
-          }
-        })
-        .catch((err: any) => {
-          console.warn(`⚠️ Failed to seed mock price for ${symbol} via REST, using static fallback:`, err.message);
-          this.mockPrices.set(sym, 1000.0);
-          this.emit("priceUpdate", { symbol: sym, ltp: 1000.0 });
-        });
-    }
+  /**
+   * Start a synthetic market tick simulator for PAPER trading / offline testing.
+   * Emits randomised price ticks every 5 seconds to simulate a live WebSocket feed.
+   */
 
-    this.mockTickInterval = setInterval(() => {
-      for (const symbol of symbols) {
-        const sym = symbol.toUpperCase();
-        let price = this.mockPrices.get(sym);
-        if (price === undefined || price <= 0) {
-          price = 1000.0;
-        }
-        // Small random walk: -0.05% to +0.05%
-        const percentChange = (Math.random() - 0.5) * 0.001; // Max 0.05% change
-        const nextPrice = price * (1 + percentChange);
-        const roundedPrice = parseFloat(nextPrice.toFixed(2));
-        this.mockPrices.set(sym, roundedPrice);
-        this.emit("priceUpdate", { symbol: sym, ltp: roundedPrice });
-      }
-    }, 2000);
-  }
-
-  stopMockTickSimulator(): void {
-    if (this.mockTickInterval) {
-      clearInterval(this.mockTickInterval);
-      this.mockTickInterval = null;
-      console.log("🎮 PAPER mock tick simulator stopped.");
-    }
-  }
-
-  // Paper stream removed in favor of real market data feed
 
   private getSymbolFromToken(token: string): string {
     for (const [symbol, instrToken] of Object.entries(upstoxConfig.instruments)) {

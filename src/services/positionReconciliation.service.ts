@@ -203,7 +203,6 @@ Cache synchronized immediately`);
     console.log(`🔧 Attempting automated repair for position ${sym}...`);
 
     try {
-      const dbRepo = AppDataSource.getRepository(ActivePosition);
       const tradeRepo = AppDataSource.getRepository(TradeLog);
 
       const lastBuyLog = await tradeRepo.findOne({
@@ -213,7 +212,6 @@ Cache synchronized immediately`);
 
       const entryPrice = lastBuyLog ? lastBuyLog.price : avgEntryPrice;
       const peakPrice = lastBuyLog ? lastBuyLog.price : avgEntryPrice;
-      const brokerOrderId = lastBuyLog ? lastBuyLog.brokerOrderId : undefined;
 
       const repairedPos = new ActivePosition();
       repairedPos.symbol = sym;
@@ -224,8 +222,8 @@ Cache synchronized immediately`);
       repairedPos.stopLossPercent = 0.02;
       repairedPos.createdAt = lastBuyLog ? lastBuyLog.createdAt : new Date();
 
-      await dbRepo.save(repairedPos);
-      this.setCachedPosition(repairedPos);
+      // Route through the single authorized write path to keep DB + cache in sync
+      await PositionReconciliationService.savePosition(repairedPos);
 
       console.log(`✓ Position ${sym} successfully repaired and database record restored.`);
       return true;
