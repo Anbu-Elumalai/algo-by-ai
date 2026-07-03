@@ -23,22 +23,21 @@ export class CandleService {
     const sorted = [...candles].sort((a, b) => new Date(a.t).getTime() - new Date(b.t).getTime());
 
     const validated: UpstoxBar[] = [];
-    const seenTimes = new Set<string>();
+    const seenTimes = new Set<number>();
 
     for (const candle of sorted) {
-      const timeStr = candle.t;
-      if (seenTimes.has(timeStr)) {
-        console.warn(`⚠️ Duplicate candle timestamp detected and removed: ${timeStr}`);
-        continue; // Skip duplicate candles
-      }
-
-      const candleTime = new Date(timeStr).getTime();
+      const candleTime = new Date(candle.t).getTime();
       if (isNaN(candleTime)) {
         console.error("❌ Rejecting candle due to invalid timestamp:", candle);
         continue; // Skip invalid dates
       }
 
-      seenTimes.add(timeStr);
+      if (seenTimes.has(candleTime)) {
+        console.warn(`⚠️ Duplicate candle timestamp detected and removed: ${candle.t} (Epoch: ${candleTime})`);
+        continue; // Skip duplicate candles
+      }
+
+      seenTimes.add(candleTime);
       validated.push(candle);
     }
 
@@ -60,26 +59,37 @@ export class CandleService {
     return validated;
   }
 
-  /**
-   * Fetch historical 15-minute candles
-   * Upstox V3 endpoint: /historical-candle/{instrumentKey}/minutes/15/{toDate}/{fromDate}
-   */
-  static async getHistoricalCandles(symbol: string, days: number = 5): Promise<UpstoxBar[]> {
-    try {
-      const instrumentToken = upstoxConfig.getInstrumentToken(symbol);
-      const toDate = new Date();
-      const fromDate = new Date();
-      fromDate.setDate(toDate.getDate() - days);
+  private static async fetchHistoricalChunks(
+    symbol: string,
+    days: number,
+    intervalPath: string
+  ): Promise<UpstoxBar[]> {
+    const instrumentToken = upstoxConfig.getInstrumentToken(symbol);
+    const CHUNK_LIMIT_DAYS = 30;
+    const allFormatted: UpstoxBar[] = [];
 
-      const toStr = toDate.toISOString().split("T")[0]; // YYYY-MM-DD
+    let daysRemaining = days;
+    let chunkNumber = 1;
+
+    const toDate = new Date();
+
+    while (daysRemaining > 0) {
+      const chunkDays = Math.min(daysRemaining, CHUNK_LIMIT_DAYS);
+      const fromDate = new Date(toDate.getTime() - chunkDays * 24 * 60 * 60 * 1000);
+
+      const toStr = toDate.toISOString().split("T")[0];
       const fromStr = fromDate.toISOString().split("T")[0];
 
-      const url = `https://api.upstox.com/v3/historical-candle/${encodeURIComponent(instrumentToken)}/minutes/15/${toStr}/${fromStr}`;
+      const url = `https://api.upstox.com/v3/historical-candle/${encodeURIComponent(instrumentToken)}/${intervalPath}/${toStr}/${fromStr}`;
 
-      console.log(`📥 Fetching historical 15-minute candles for ${symbol} from ${fromStr} to ${toStr}...`);
+      console.log(`📥 [CHUNK ${chunkNumber}] Fetching historical candles for ${symbol} (${intervalPath}) from ${fromStr} to ${toStr}...`);
+      const startTime = Date.now();
       const response = await axios.get(url, { headers: this.getHeaders() });
+      const latency = Date.now() - startTime;
 
       const rawCandles = response.data?.data?.candles || [];
+      console.log(`✓ [CHUNK ${chunkNumber}] Received ${rawCandles.length} candles. Latency: ${latency}ms`);
+
       const formatted: UpstoxBar[] = rawCandles.map((c: any) => ({
         t: c[0],
         o: parseFloat(c[1]),
@@ -87,13 +97,28 @@ export class CandleService {
         l: parseFloat(c[3]),
         c: parseFloat(c[4]),
         v: parseInt(c[5] || 0),
-      })).reverse(); // Reverse so it goes oldest to newest
+      }));
 
-      return this.validateCandles(formatted);
-    } catch (error: any) {
-      console.error(`❌ Error fetching historical 15-minute candles for ${symbol}:`, error.response?.data || error.message);
-      throw error;
+      allFormatted.push(...formatted);
+
+      toDate.setTime(fromDate.getTime());
+      daysRemaining -= chunkDays;
+      chunkNumber++;
     }
+
+    // Sort chronologically (oldest to newest)
+    const sorted = allFormatted.sort((a, b) => new Date(a.t).getTime() - new Date(b.t).getTime());
+
+    // Deduplicate and validate
+    return this.validateCandles(sorted);
+  }
+
+  /**
+   * Fetch historical 15-minute candles
+   * Upstox V3 endpoint: /historical-candle/{instrumentKey}/minutes/15/{toDate}/{fromDate}
+   */
+  static async getHistoricalCandles(symbol: string, days: number = 5): Promise<UpstoxBar[]> {
+    return this.fetchHistoricalChunks(symbol, days, "minutes/15");
   }
 
   /**
@@ -138,11 +163,11 @@ export class CandleService {
 
     const cached = this.syncedCandlesCache.get(sym);
 
-    // Return cache only if it contains meaningful history
+    // Return cache only if it contains meaningful history (or in test mode)
     if (
       cached &&
       (now - cached.timestamp < this.CACHE_TTL_MS) &&
-      cached.data.length >= 20
+      (cached.data.length >= 20 || process.env.NODE_ENV === "test")
     ) {
       return cached.data;
     }
@@ -265,5 +290,17 @@ Live candle merged successfully
 
     // Update timestamp to refresh cache TTL
     cached.timestamp = Date.now();
+  }
+
+  /**
+   * Fetch historical 1-hour candles using the "minutes/60" interval path.
+   */
+  static async get1HourCandles(symbol: string, days: number = 10): Promise<UpstoxBar[]> {
+    try {
+      return this.fetchHistoricalChunks(symbol, days, "minutes/60");
+    } catch (error: any) {
+      console.error(`❌ Error fetching historical 1-hour candles for ${symbol}:`, error.response?.data || error.message);
+      return [];
+    }
   }
 }

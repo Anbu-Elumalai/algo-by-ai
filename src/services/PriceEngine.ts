@@ -21,15 +21,15 @@ export class PriceEngine {
 
   static initialize(): void {
     if (this.isInitialized) return;
-    
+
     console.log("⚡ Centralized Price Engine Initializing...");
-    
+
     // Subscribe to WebSocket price ticks
     marketDataService.on("priceUpdate", ({ symbol, ltp }) => {
       const sym = symbol.toUpperCase();
       this.prices.set(sym, ltp);
       this.lastTickTimes.set(sym, Date.now());
-      
+
       console.log(`[PRICE ENGINE]
 ${sym} updated to ₹${ltp.toFixed(2)}
 Age=0ms
@@ -151,7 +151,12 @@ Health=HEALTHY`);
     const symbols = Array.from(this.prices.keys());
     for (const sym of symbols) {
       try {
-        const health = await this.getPriceHealth(sym);
+        const health: any = await this.getPriceHealth(sym);
+
+        console.log(
+          `${sym} | age=${health.lastTickAgeMs}ms | healthy=${health.healthy}`
+        );
+
         if (health.feedDivergencePercent > 1.0) {
           console.warn(`🚨 FEED DIVERGENCE WARNING: ${sym} price feed divergence is ${health.feedDivergencePercent.toFixed(2)}% (greater than 1% threshold).`);
         }

@@ -133,6 +133,16 @@ Drawdown: ${sign}${diffPercent.toFixed(2)}%`);
   }
 
   /**
+   * Centralized utility to calculate trailing stop price based on peak price and stop loss percent.
+   */
+  static calculateTrailingStop(peakPrice: number, stopLossPercent: number): number {
+    const slPct = stopLossPercent || 0.02; // Default to 2% if not set or 0
+    return slPct > 0.5
+      ? peakPrice - slPct
+      : peakPrice * (1 - slPct);
+  }
+
+  /**
    * Evaluates the trailing stop loss for an active position, updating the peak price dynamically.
    */
   static checkTrailingStopLoss(
@@ -146,13 +156,13 @@ Drawdown: ${sign}${diffPercent.toFixed(2)}%`);
     // Initialize peak if not set
     if (updatedPeak <= 0) {
       updatedPeak = position.avgEntryPrice;
-      trailingStop = updatedPeak * (1 - position.stopLossPercent);
+      trailingStop = this.calculateTrailingStop(updatedPeak, position.stopLossPercent);
     }
 
     // If current price is higher than the previous peak, trail the stop upward
     if (currentPrice > updatedPeak) {
       updatedPeak = currentPrice;
-      trailingStop = currentPrice * (1 - position.stopLossPercent);
+      trailingStop = this.calculateTrailingStop(updatedPeak, position.stopLossPercent);
       console.log(`📈 Trailing Stop Updated for ${position.symbol}: New Peak ₹${updatedPeak.toFixed(2)} | Stop price ₹${trailingStop.toFixed(2)}`);
     }
 

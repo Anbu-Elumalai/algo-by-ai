@@ -1,0 +1,119 @@
+=========================================
+RUNNING DETAILED DB AUDIT FOR 2026-07-03
+=========================================
+Found 20 strategy decisions today.
+BUY signals: 0
+SELL signals: 0
+HOLD signals: 20
+
+--- DECISIONS LIST ---
+[2026-07-03T04:08:23.341Z] Symbol: RELIANCE | Signal: HOLD
+Reason: No crossover detected. Fast SMA: 1304.30, Slow SMA: 1303.83, RSI: 60.80 | ADX: 17.0 | Choppiness: 47.7.
+Fast SMA: 1304.3000000000002 | SlowSma: 1303.8333333333333 | RSI: 60.80116715013256 | ADX: 16.992425212229623 | ATR: 3.183065357332415 | Score: 45
+-----------------------------------------
+[2026-07-03T04:08:23.598Z] Symbol: TCS | Signal: HOLD
+Reason: No crossover detected. Fast SMA: 2071.67, Slow SMA: 2061.94, RSI: 82.01 | ADX: 47.8 | Choppiness: 28.0.
+Fast SMA: 2071.6666666666665 | SlowSma: 2061.9380952380952 | RSI: 82.00931876953442 | ADX: 47.78482472698977 | ATR: 10.380392209878787 | Score: 65
+-----------------------------------------
+[2026-07-03T04:08:23.845Z] Symbol: INFY | Signal: HOLD
+Reason: No crossover detected. Fast SMA: 1041.44, Slow SMA: 1039.61, RSI: 78.66 | ADX: 50.3 | Choppiness: 25.8.
+Fast SMA: 1041.4444444444443 | SlowSma: 1039.6142857142856 | RSI: 78.66414473351963 | ADX: 50.29061132167667 | ATR: 5.652094897844413 | Score: 65
+-----------------------------------------
+[2026-07-03T04:09:23.370Z] Symbol: TCS | Signal: HOLD
+Reason: No crossover detected. Fast SMA: 2075.62, Slow SMA: 2064.46, RSI: 74.86 | ADX: 49.7 | Choppiness: 30.4.
+Fast SMA: 2075.6222222222223 | SlowSma: 2064.4571428571426 | RSI: 74.85547912769644 | ADX: 49.688849136703354 | ATR: 10.324649909173152 | Score: 60
+-----------------------------------------
+[2026-07-03T04:09:23.482Z] Symbol: INFY | Signal: HOLD
+Reason: No crossover detected. Fast SMA: 1042.40, Slow SMA: 1040.26, RSI: 69.72 | ADX: 51.1 | Choppiness: 28.0.
+Fast SMA: 1042.4 | SlowSma: 1040.2571428571428 | RSI: 69.71823033755553 | ADX: 51.073518144929594 | ATR: 5.626945262284095 | Score: 60
+-----------------------------------------
+[2026-07-03T04:15:23.326Z] Symbol: RELIANCE | Signal: HOLD
+Reason: No crossover detected. Fast SMA: 1304.67, Slow SMA: 1304.06, RSI: 56.40 | ADX: 18.6 | Choppiness: 48.4.
+Fast SMA: 1304.6666666666667 | SlowSma: 1304.057142857143 | RSI: 56.401402012492014 | ADX: 18.583611723049607 | ATR: 3.127132117522963 | Score: 45
+-----------------------------------------
+[2026-07-03T04:15:23.431Z] Symbol: TCS | Signal: HOLD
+Reason: No crossover detected. Fast SMA: 2078.06, Slow SMA: 2066.26, RSI: 65.42 | ADX: 50.0 | Choppiness: 33.5.
+Fast SMA: 2078.0555555555557 | SlowSma: 2066.2571428571428 | RSI: 65.4204668781738 | ADX: 49.99402625748387 | ATR: 10.672889201375089 | Score: 60
+-----------------------------------------
+[2026-07-03T04:15:23.531Z] Symbol: INFY | Signal: HOLD
+Reason: No crossover detected. Fast SMA: 1043.09, Slow SMA: 1040.68, RSI: 62.71 | ADX: 50.8 | Choppiness: 30.5.
+Fast SMA: 1043.0888888888887 | SlowSma: 1040.6809523809522 | RSI: 62.70633429978131 | ADX: 50.81409346161773 | ATR: 5.653592029263803 | Score: 80
+-----------------------------------------
+[2026-07-03T04:30:23.450Z] Symbol: RELIANCE | Signal: HOLD
+Reason: No crossover detected. Fast SMA: 1305.01, Slow SMA: 1304.20, RSI: 56.40 | ADX: 19.3 | Choppiness: 48.9.
+Fast SMA: 1305.011111111111 | SlowSma: 1304.2047619047619 | RSI: 56.401402012492014 | ADX: 19.310250786217182 | ATR: 3.1109083948427414 | Score: 45
+-----------------------------------------
+[2026-07-03T04:30:23.527Z] Symbol: TCS | Signal: HOLD
+Reason: No crossover detected. Fast SMA: 2081.11, Slow SMA: 2068.37, RSI: 67.67 | ADX: 50.1 | Choppiness: 34.7.
+Fast SMA: 2081.1111111111113 | SlowSma: 2068.3666666666663 | RSI: 67.67474281486463 | ADX: 50.06757578547992 | ATR: 10.724825686991162 | Score: 60
+-----------------------------------------
+[2026-07-03T04:30:23.601Z] Symbol: INFY | Signal: HOLD
+Reason: No crossover detected. Fast SMA: 1043.84, Slow SMA: 1041.08, RSI: 63.18 | ADX: 49.9 | Choppiness: 31.8.
+Fast SMA: 1043.8444444444442 | SlowSma: 1041.0809523809523 | RSI: 63.18108487395329 | ADX: 49.89184557265956 | ATR: 5.635478312887824 | Score: 80
+-----------------------------------------
+[2026-07-03T04:45:23.625Z] Symbol: RELIANCE | Signal: HOLD
+Reason: No crossover detected. Fast SMA: 1305.22, Slow SMA: 1304.38, RSI: 50.53 | ADX: 19.4 | Choppiness: 50.0.
+Fast SMA: 1305.2222222222222 | SlowSma: 1304.3761904761905 | RSI: 50.529714411010175 | ADX: 19.393103737159272 | ATR: 3.1101292237825553 | Score: 30
+-----------------------------------------
+[2026-07-03T04:45:23.736Z] Symbol: TCS | Signal: HOLD
+Reason: No crossover detected. Fast SMA: 2084.30, Slow SMA: 2070.40, RSI: 68.00 | ADX: 50.3 | Choppiness: 36.2.
+Fast SMA: 2084.3 | SlowSma: 2070.3999999999996 | RSI: 67.9957262128298 | ADX: 50.26981227028638 | ATR: 10.715909566491787 | Score: 60
+-----------------------------------------
+[2026-07-03T04:45:23.837Z] Symbol: INFY | Signal: HOLD
+Reason: No crossover detected. Fast SMA: 1044.74, Slow SMA: 1041.53, RSI: 64.45 | ADX: 49.2 | Choppiness: 34.0.
+Fast SMA: 1044.7444444444445 | SlowSma: 1041.533333333333 | RSI: 64.44829571976864 | ADX: 49.24173860308837 | ATR: 5.675801290538698 | Score: 65
+-----------------------------------------
+[2026-07-03T05:00:23.670Z] Symbol: RELIANCE | Signal: HOLD
+Reason: No crossover detected. Fast SMA: 1305.28, Slow SMA: 1304.44, RSI: 47.85 | ADX: 19.2 | Choppiness: 50.0.
+Fast SMA: 1305.2777777777778 | SlowSma: 1304.4380952380952 | RSI: 47.84753807862775 | ADX: 19.156584311774306 | ATR: 3.0308342792266587 | Score: 30
+-----------------------------------------
+[2026-07-03T05:00:23.759Z] Symbol: TCS | Signal: HOLD
+Reason: No crossover detected. Fast SMA: 2086.11, Slow SMA: 2072.31, RSI: 64.79 | ADX: 50.2 | Choppiness: 38.4.
+Fast SMA: 2086.1111111111113 | SlowSma: 2072.314285714286 | RSI: 64.79127595479927 | ADX: 50.16084116609163 | ATR: 10.436201740313782 | Score: 65
+-----------------------------------------
+[2026-07-03T05:00:23.856Z] Symbol: INFY | Signal: HOLD
+Reason: No crossover detected. Fast SMA: 1045.36, Slow SMA: 1042.02, RSI: 63.19 | ADX: 48.6 | Choppiness: 34.3.
+Fast SMA: 1045.3555555555556 | SlowSma: 1042.0190476190476 | RSI: 63.187204771797404 | ADX: 48.63806784562941 | ATR: 5.491815484071642 | Score: 80
+-----------------------------------------
+[2026-07-03T05:15:23.759Z] Symbol: RELIANCE | Signal: HOLD
+Reason: No crossover detected. Fast SMA: 1305.32, Slow SMA: 1304.43, RSI: 45.53 | ADX: 18.8 | Choppiness: 48.7.
+Fast SMA: 1305.322222222222 | SlowSma: 1304.4333333333334 | RSI: 45.53383881131423 | ADX: 18.829935384388 | ATR: 2.9714889735676153 | Score: 30
+-----------------------------------------
+[2026-07-03T05:15:23.840Z] Symbol: TCS | Signal: HOLD
+Reason: No crossover detected. Fast SMA: 2088.71, Slow SMA: 2074.16, RSI: 66.32 | ADX: 50.2 | Choppiness: 40.3.
+Fast SMA: 2088.7111111111108 | SlowSma: 2074.1619047619047 | RSI: 66.31600411985762 | ADX: 50.178131520268956 | ATR: 10.226473044577082 | Score: 60
+-----------------------------------------
+[2026-07-03T05:15:23.918Z] Symbol: INFY | Signal: HOLD
+Reason: No crossover detected. Fast SMA: 1046.59, Slow SMA: 1042.44, RSI: 64.98 | ADX: 48.3 | Choppiness: 35.6.
+Fast SMA: 1046.588888888889 | SlowSma: 1042.4428571428568 | RSI: 64.97943455354093 | ADX: 48.2939394942659 | ATR: 5.4138286637808175 | Score: 65
+-----------------------------------------
+
+--- ERROR LOGS ---
+Found 0 error logs today.
+
+--- DAILY RISK TRACKERS ---
+[
+  {
+    "_id": "6a47357a4abc0199b8fbcabb",
+    "date": "2026-07-03",
+    "startingEquity": 100000,
+    "currentEquity": 100000,
+    "tradeCount": 0,
+    "isHalted": false,
+    "createdAt": "2026-07-03T04:07:22.731Z",
+    "updatedAt": "2026-07-03T05:16:23.631Z"
+  }
+]
+
+--- SYSTEM HEALTH LOGS ---
+Found 10 system health logs today.
+[2026-07-03T05:12:23.157Z] WS: CONNECTED | DB: CONNECTED | ActiveLoop: true | CPU: 0% | Memory: 77.13203770317322%
+[2026-07-03T05:07:23.147Z] WS: CONNECTED | DB: CONNECTED | ActiveLoop: true | CPU: 0% | Memory: 76.38369833570783%
+[2026-07-03T05:02:23.141Z] WS: CONNECTED | DB: CONNECTED | ActiveLoop: true | CPU: 0% | Memory: 78.53808895402462%
+[2026-07-03T04:57:23.135Z] WS: CONNECTED | DB: CONNECTED | ActiveLoop: true | CPU: 0% | Memory: 79.04897799091974%
+[2026-07-03T04:52:23.121Z] WS: CONNECTED | DB: CONNECTED | ActiveLoop: true | CPU: 0% | Memory: 78.45964402146755%
+[2026-07-03T04:47:23.109Z] WS: CONNECTED | DB: CONNECTED | ActiveLoop: true | CPU: 0% | Memory: 78.66609085265459%
+[2026-07-03T04:42:23.101Z] WS: CONNECTED | DB: CONNECTED | ActiveLoop: true | CPU: 0% | Memory: 83.48354832740377%
+[2026-07-03T04:37:23.087Z] WS: CONNECTED | DB: CONNECTED | ActiveLoop: true | CPU: 0% | Memory: 80.34713706391754%
+[2026-07-03T04:32:23.084Z] WS: CONNECTED | DB: CONNECTED | ActiveLoop: true | CPU: 0% | Memory: 82.94688383219787%
+[2026-07-03T04:27:23.080Z] WS: CONNECTED | DB: CONNECTED | ActiveLoop: true | CPU: 0% | Memory: 83.59805458512575%

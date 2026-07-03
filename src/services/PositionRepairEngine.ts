@@ -3,6 +3,7 @@ import { ActivePosition } from "../entity/ActivePosition";
 import { UpstoxService } from "./upstox.service";
 import { NotificationService } from "./notification.service";
 import { PriceEngine } from "./PriceEngine";
+import { RiskService } from "./risk.service";
 
 export interface RepairReportItem {
   symbol: string;
@@ -82,8 +83,8 @@ export class PositionRepairEngine {
             // 2. Recalculate peak price (Math.max of avgEntryPrice and real LTP)
             const recalculatedPeak = Math.max(pos.avgEntryPrice, ltp);
             
-            // 3. Recalculate trailing stop
-            const recalculatedStop = recalculatedPeak * (1 - pos.stopLossPercent);
+            // 3. Recalculate trailing stop using centralized RiskService utility
+            const recalculatedStop = RiskService.calculateTrailingStop(recalculatedPeak, pos.stopLossPercent);
 
             item.newPeakPrice = recalculatedPeak;
             item.newTrailingStop = recalculatedStop;

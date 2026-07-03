@@ -20,6 +20,12 @@ for (const envVar of REQUIRED_ENV) {
   }
 }
 
+const jwtSecret = process.env.JWT_SECRET || "";
+if (jwtSecret.length < 32) {
+  console.error("❌ CRITICAL SECURITY BREACH: JWT_SECRET must be at least 32 characters (256-bit strength)!");
+  process.exit(1);
+}
+
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import { useExpressServer } from "routing-controllers";

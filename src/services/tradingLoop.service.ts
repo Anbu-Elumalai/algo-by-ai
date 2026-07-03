@@ -5,12 +5,13 @@ import { PositionGuardService } from "./positionGuard.service";
 import { NotificationService } from "./notification.service";
 import { PreLiveValidationService } from "./preLiveValidation.service";
 import { marketDataService } from "./marketData.service";
-import { analyzeMovingAverageCrossover } from "../strategies/strategyEngine";
+import { analyzeMovingAverageCrossover, analyzeAdvancedStrategy, prepareStrategyCandles, calculateEMA } from "../strategies/strategyEngine";
 import { tradingTickMutex } from "../utils/mutex";
 import { TradeLog } from "../entity/TradeLog";
 import { BotPerformance } from "../entity/BotPerformance";
 import { ActivePosition } from "../entity/ActivePosition";
 import { StrategyDecision } from "../entity/StrategyDecision";
+import { StrategyEvaluationLog } from "../entity/StrategyEvaluationLog";
 import { ExecutionLog } from "../entity/ExecutionLog";
 import { AppDataSource } from "../data-source";
 import { PriceEngine } from "./PriceEngine";
@@ -299,24 +300,106 @@ Price=${ltp.toFixed(1)}`);
         return;
       }
 
+      const allDbPositions = await positionRepo.find();
+
       for (const symbol of this.targetSymbols) {
         const currentPrice = await PriceEngine.getLastPrice(symbol);
         if (currentPrice <= 0) continue;
 
-        const candles = await CandleService.getSyncedCandles(symbol, 5);
+        // Fetch 15m candles (need at least 30 candles history for ADX/RSI)
+        const candles = await CandleService.getSyncedCandles(symbol, 10);
         
-        // Prevent repeated execution during same candle
-        const lastCandle = candles[candles.length - 1];
-        if (lastCandle) {
+        // Preprocess candles using unified logic to get completed candles
+        const nowTime = new Date();
+        const completed15m = prepareStrategyCandles(candles, nowTime, 15);
+        const lastCompleted = completed15m[completed15m.length - 1];
+        if (lastCompleted) {
           const lastTime = this.lastProcessedCandleTimes.get(symbol);
-          if (lastTime === lastCandle.t) {
+          if (lastTime === lastCompleted.t) {
             continue; // Skip duplicate evaluation in the same candle
           }
-          this.lastProcessedCandleTimes.set(symbol, lastCandle.t);
         }
 
-        const closingPrices = candles.map(c => c.c);
-        const strategyReport = analyzeMovingAverageCrossover(closingPrices, 9, 21);
+        // Fetch 1H candles for higher timeframe trend filter
+        const candles1H = await CandleService.get1HourCandles(symbol, 10);
+        const completed1H = prepareStrategyCandles(candles1H, nowTime, 60);
+
+        // Compute current IST time to check volatility hours
+        const now = new Date();
+        const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+        const ist = new Date(utc + 3600000 * 5.5);
+        const timeVal = ist.getHours() * 100 + ist.getMinutes();
+
+        const dbPos = allDbPositions.find(p => p.symbol === symbol) || null;
+
+        // Run advanced strategy evaluation
+        const strategyReport = analyzeAdvancedStrategy(completed15m, completed1H, timeVal, !!dbPos);
+
+        // Initialize strategy evaluation log structure
+        const evalLog = new StrategyEvaluationLog();
+        evalLog.date = nowTime.toISOString().split("T")[0];
+        evalLog.timestamp = nowTime.toISOString();
+        evalLog.symbol = symbol;
+        evalLog.strategyVersion = "2.0";
+        evalLog.candleTimestamp = lastCompleted ? lastCompleted.t : nowTime.toISOString();
+        evalLog.signal = strategyReport.signal;
+        evalLog.reason = strategyReport.reason;
+        evalLog.tradeScore = strategyReport.score;
+
+        let ema50Val = 0;
+        if (completed1H.length >= 50) {
+          const closes1H = completed1H.map(c => c.c);
+          ema50Val = calculateEMA(closes1H, 50);
+        }
+        const volSlice = candles.slice(-21, -1).map(c => c.v);
+        const avgVol = volSlice.reduce((a, b) => a + b, 0) / (volSlice.length || 1);
+
+        evalLog.indicators = {
+          fastSMA: strategyReport.fastSma,
+          slowSMA: strategyReport.slowSma,
+          rsi: strategyReport.rsi,
+          adx: strategyReport.adx,
+          atr: strategyReport.atr,
+          volume: lastCompleted ? lastCompleted.v : 0,
+          averageVolume: avgVol,
+          ema50_1H: ema50Val,
+          riskReward: strategyReport.rrRatio,
+          choppiness: strategyReport.choppiness,
+          bbw: strategyReport.bbw
+        };
+
+        const isSideways = strategyReport.adx < 25 || strategyReport.choppiness > 61.8 || strategyReport.bbw < 0.01;
+        evalLog.filters = {
+          goldenCross: strategyReport.fastSma > strategyReport.slowSma,
+          rsi: strategyReport.rsi > 55 && strategyReport.rsi < 70,
+          adx: strategyReport.adx >= 25,
+          volume: (lastCompleted ? lastCompleted.v : 0) > avgVol,
+          trend1H: completed1H.length >= 50 ? (completed1H[completed1H.length - 1].c > ema50Val) : true,
+          riskReward: strategyReport.rrRatio >= 2.0,
+          sideways: !isSideways,
+          tradeScore: strategyReport.score >= 60
+        };
+
+        evalLog.execution = {
+          orderPlaced: false,
+          blockedReason: strategyReport.signal === "HOLD" ? "Signal remained HOLD" : undefined
+        };
+
+        console.log("\n==============================");
+        console.log("[STRATEGY VERIFICATION]");
+        console.log("Symbol:", symbol);
+        console.log("Signal:", strategyReport.signal);
+        console.log("Reason:", strategyReport.reason);
+        console.log("Trade Score:", strategyReport.score);
+        console.log("Golden Cross:", strategyReport.fastSma > strategyReport.slowSma);
+        console.log("ADX:", strategyReport.adx);
+        console.log("RSI:", strategyReport.rsi);
+        console.log("ATR:", strategyReport.atr);
+        console.log("Risk Reward:", strategyReport.rrRatio);
+        console.log("1H Trend:", strategyReport.is1HTrendBullish);
+        console.log("Volume:", strategyReport.volumeConfirmed);
+        console.log("Sideways:", strategyReport.adx < 25 || strategyReport.choppiness > 61.8 || strategyReport.bbw < 0.01);
+        console.log("==============================");
 
         // Store Strategy Decision in DB
         const decision = new StrategyDecision();
@@ -326,46 +409,112 @@ Price=${ltp.toFixed(1)}`);
         decision.rsi = strategyReport.rsi;
         decision.signal = strategyReport.signal;
         decision.reason = strategyReport.reason;
+        if ("adx" in strategyReport) (decision as any).adx = strategyReport.adx;
+        if ("atr" in strategyReport) (decision as any).atr = strategyReport.atr;
+        if ("score" in strategyReport) (decision as any).score = strategyReport.score;
         await AppDataSource.getRepository(StrategyDecision).save(decision);
 
-        const dbPos = await positionRepo.findOne({ where: { symbol } as any });
+        // Lock completed candle
+        if (lastCompleted) {
+          this.lastProcessedCandleTimes.set(symbol, lastCompleted.t);
+        }
 
         // Buy execution pipeline
         if (strategyReport.signal === "BUY" && !dbPos) {
-          console.log(`[SIGNAL]
-BUY signal generated
-Reason: Golden Cross
-RSI: ${strategyReport.rsi.toFixed(1)}`);
+          console.log(`[SIGNAL] BUY signal generated | Score: ${strategyReport.score}/100 | ATR: ${strategyReport.atr?.toFixed(2)}`);
 
           // Verify Guard
           const guard = await PositionGuardService.verifyOrderAllowed(symbol, "BUY");
           if (!guard.allowed) {
             console.warn(`🛑 PositionGuard blocked BUY order: ${guard.reason}`);
+            evalLog.execution.blockedReason = `PositionGuard: ${guard.reason}`;
+            await AppDataSource.getRepository(StrategyEvaluationLog).save(evalLog);
             continue;
           }
 
-          const qty = RiskService.calculatePositionSize(account.equity, currentPrice, 0.02);
+          // Calculate Position Sizing based on ATR: 1% risk per trade on 2 * ATR stop distance
+          const atr = strategyReport.atr || 2.0;
+          const stopDistance = 2 * atr;
+          const maxRiskAmount = account.equity * 0.01;
+          const qtyRiskLimit = Math.floor(maxRiskAmount / stopDistance);
+          
+          // Cap at 10% maximum capital allocation
+          const maxCapital = account.equity * 0.10;
+          const qtyCapitalLimit = Math.floor(maxCapital / currentPrice);
+          
+          const qty = Math.min(qtyRiskLimit, qtyCapitalLimit);
+
           if (qty > 0) {
             const totalCost = qty * currentPrice;
             const fees = 40;
 
             if (account.cash >= (totalCost + fees)) {
+              evalLog.execution.orderPlaced = true;
+              console.log("[ORDER CHECK]");
+              console.log("Should Buy:", strategyReport.signal === "BUY");
+              console.log("Executing BUY...");
+
+              console.log("\n==============================");
+              console.log("[BUY VERIFICATION]");
+              console.log("");
+              console.log("Time:");
+              console.log(new Date().toISOString());
+              console.log("");
+              console.log("Symbol:");
+              console.log(symbol);
+              console.log("");
+              console.log("Golden Cross:");
+              console.log(strategyReport.fastSma > strategyReport.slowSma ? "TRUE" : "FALSE");
+              console.log("");
+              console.log("Fast SMA:");
+              console.log(strategyReport.fastSma.toFixed(2));
+              console.log("");
+              console.log("Slow SMA:");
+              console.log(strategyReport.slowSma.toFixed(2));
+              console.log("");
+              console.log("RSI:");
+              console.log(strategyReport.rsi.toFixed(2));
+              console.log("");
+              console.log("ADX:");
+              console.log(strategyReport.adx.toFixed(2));
+              console.log("");
+              console.log("ATR:");
+              console.log(strategyReport.atr.toFixed(2));
+              console.log("");
+              console.log("Volume:");
+              console.log(candles[candles.length - 2]?.v || 0);
+              console.log("");
+              console.log("Avg Volume:");
+              const volSlice = candles.slice(-21, -1).map(c => c.v);
+              const avgVol = volSlice.reduce((a, b) => a + b, 0) / (volSlice.length || 1);
+              console.log(avgVol.toFixed(0));
+              console.log("");
+              console.log("1H Trend:");
+              console.log(strategyReport.is1HTrendBullish ? "TRUE" : "FALSE");
+              console.log("");
+              console.log("Risk Reward:");
+              console.log(strategyReport.rrRatio.toFixed(2));
+              console.log("");
+              console.log("Trade Score:");
+              console.log(strategyReport.score.toFixed(0));
+              console.log("");
+              console.log("Decision:");
+              console.log("BUY");
+              console.log("==============================\n");
+
               const idempotencyKey = `crossover-BUY-${symbol}-${Math.floor(Date.now() / 900000)}`;
               const correlationId = `corr-crossover-${Date.now()}`;
               const order = await OrderExecutionManager.executeOrder(idempotencyKey, correlationId, symbol, qty, "BUY", "MARKET");
 
-              console.log(`[ORDER]
-BUY executed
-Qty=${qty}
-Price=${currentPrice.toFixed(1)}`);
+              console.log(`[ORDER] BUY executed | Qty=${qty} | Price=${currentPrice.toFixed(1)}`);
 
               const newPos = new ActivePosition();
               newPos.symbol = symbol;
               newPos.qty = qty;
               newPos.avgEntryPrice = currentPrice;
               newPos.peakPrice = currentPrice;
-              newPos.trailingStopPrice = currentPrice * 0.98;
-              newPos.stopLossPercent = 0.02;
+              newPos.trailingStopPrice = currentPrice - 2 * atr;
+              newPos.stopLossPercent = 1.5 * atr; // Trailing stop offset saved in stopLossPercent
               await PositionReconciliationService.savePosition(newPos);
 
               const log = new TradeLog();
@@ -374,7 +523,7 @@ Price=${currentPrice.toFixed(1)}`);
               log.price = currentPrice;
               log.qty = qty;
               log.totalAmount = totalCost;
-              log.strategy = "SMA Crossover (Live 15m)";
+              log.strategy = "Advanced Crossover (Closed 15m)";
               log.signalReason = strategyReport.reason;
               log.brokerOrderId = order.order_id || JSON.stringify(order);
               log.transactionFees = fees;
@@ -388,7 +537,7 @@ Price=${currentPrice.toFixed(1)}`);
               execLog.signalTime = new Date();
               execLog.signalPrice = currentPrice;
               execLog.executionTime = new Date();
-              execLog.executionPrice = currentPrice; // Market orders assume expected = actual in mock, live computes diff
+              execLog.executionPrice = currentPrice;
               execLog.slippageAmount = 0;
               execLog.slippagePercent = 0;
               execLog.signalDelayMs = 200;
@@ -400,23 +549,26 @@ Price=${currentPrice.toFixed(1)}`);
 
               await NotificationService.sendNotification(
                 "BUY EXECUTED",
-                `Bought ${qty} shares of ${symbol} at average price ₹${currentPrice.toFixed(2)}`
+                `Bought ${qty} shares of ${symbol} at average price ₹${currentPrice.toFixed(2)} | Score: ${strategyReport.score}/100`
               );
+            } else {
+              evalLog.execution.blockedReason = `Insufficient cash: Available ₹${account.cash.toFixed(2)} < Required ₹${(totalCost + fees).toFixed(2)}`;
             }
+          } else {
+            evalLog.execution.blockedReason = `Calculated position size is 0`;
           }
         }
 
-        // Sell execution pipeline
+        // Sell execution pipeline (Death Cross exit)
         else if (strategyReport.signal === "SELL" && dbPos) {
-          console.log(`[SIGNAL]
-SELL signal generated
-Reason: Death Cross
-RSI: ${strategyReport.rsi.toFixed(1)}`);
+          console.log(`[SIGNAL] SELL signal generated (Death Cross) for ${symbol}`);
 
           // Verify Guard
           const guard = await PositionGuardService.verifyOrderAllowed(symbol, "SELL");
           if (!guard.allowed) {
             console.warn(`🛑 PositionGuard blocked SELL order: ${guard.reason}`);
+            evalLog.execution.blockedReason = `PositionGuard: ${guard.reason}`;
+            await AppDataSource.getRepository(StrategyEvaluationLog).save(evalLog);
             continue;
           }
 
@@ -424,10 +576,7 @@ RSI: ${strategyReport.rsi.toFixed(1)}`);
           const correlationId = `corr-crossover-${Date.now()}`;
           const order = await OrderExecutionManager.executeOrder(idempotencyKey, correlationId, symbol, dbPos.qty, "SELL", "MARKET");
 
-          console.log(`[ORDER]
-SELL executed
-Qty=${dbPos.qty}
-Price=${currentPrice.toFixed(1)}`);
+          console.log(`[ORDER] SELL executed | Qty=${dbPos.qty} | Price=${currentPrice.toFixed(1)}`);
           const totalAmount = dbPos.qty * currentPrice;
           const fees = 40;
 
@@ -437,7 +586,7 @@ Price=${currentPrice.toFixed(1)}`);
           log.price = currentPrice;
           log.qty = dbPos.qty;
           log.totalAmount = totalAmount;
-          log.strategy = "SMA Crossover (Live 15m)";
+          log.strategy = "Advanced Crossover (Closed 15m)";
           log.signalReason = strategyReport.reason;
           log.brokerOrderId = order.order_id || JSON.stringify(order);
           log.transactionFees = fees;
@@ -462,11 +611,14 @@ Price=${currentPrice.toFixed(1)}`);
           await RiskService.incrementDailyTradeCount();
           await this.logPerformanceSnapshot(account.equity, account.cash + totalAmount - fees, account.buyingPower);
 
+          evalLog.execution.orderPlaced = true;
           await NotificationService.sendNotification(
             "SELL EXECUTED",
-            `Sold ${dbPos.qty} shares of ${symbol} at average price ₹${currentPrice.toFixed(2)}`
+            `Sold ${dbPos.qty} shares of ${symbol} at average price ₹${currentPrice.toFixed(2)} (Death Cross)`
           );
         }
+
+        await AppDataSource.getRepository(StrategyEvaluationLog).save(evalLog);
       }
     } catch (err: any) {
       console.error("❌ Error in live tick execution:", err.message);
