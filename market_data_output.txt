@@ -1,32 +1,32 @@
 === MARKET DATA FEED STATS ===
 
 Symbol: RELIANCE
-Latest Price: ₹1304.00
-Last Tick Time: 2026-07-03T05:19:46.541Z
-Tick Age: 162ms
+Latest Price: ₹1321.50
+Last Tick Time: 2026-07-06T05:34:48.133Z
+Tick Age: 93ms
 Feed Status: HEALTHY
 Price Engine Health: HEALTHY
-Latest completed 15-minute candle timestamp: 2026-07-03T10:30:00+05:30
-Latest live candle timestamp: 2026-07-03T05:15:00.000Z
-Latest completed 1-hour candle timestamp: 2026-07-02T15:15:00+05:30
+Latest completed 15-minute candle timestamp: 2026-07-06T10:45:00+05:30
+Latest live candle timestamp: 2026-07-06T05:30:00.000Z
+Latest completed 1-hour candle timestamp: N/A
 --------------------------------------------------
 Symbol: TCS
-Latest Price: ₹2094.20
-Last Tick Time: 2026-07-03T05:19:46.719Z
-Tick Age: 60ms
+Latest Price: ₹2065.00
+Last Tick Time: 2026-07-06T05:34:48.294Z
+Tick Age: 49ms
 Feed Status: HEALTHY
 Price Engine Health: HEALTHY
-Latest completed 15-minute candle timestamp: 2026-07-03T10:30:00+05:30
-Latest live candle timestamp: 2026-07-03T05:15:00.000Z
-Latest completed 1-hour candle timestamp: 2026-07-02T15:15:00+05:30
+Latest completed 15-minute candle timestamp: 2026-07-06T10:45:00+05:30
+Latest live candle timestamp: 2026-07-06T05:30:00.000Z
+Latest completed 1-hour candle timestamp: N/A
 --------------------------------------------------
 Symbol: INFY
-Latest Price: ₹1049.90
-Last Tick Time: 2026-07-03T05:19:46.912Z
-Tick Age: 62ms
+Latest Price: ₹1037.40
+Last Tick Time: 2026-07-06T05:34:48.445Z
+Tick Age: 49ms
 Feed Status: HEALTHY
 Price Engine Health: HEALTHY
-Latest completed 15-minute candle timestamp: 2026-07-03T10:30:00+05:30
-Latest live candle timestamp: 2026-07-03T05:15:00.000Z
-Latest completed 1-hour candle timestamp: 2026-07-02T15:15:00+05:30
+Latest completed 15-minute candle timestamp: 2026-07-06T10:45:00+05:30
+Latest live candle timestamp: 2026-07-06T05:30:00.000Z
+Latest completed 1-hour candle timestamp: N/A
 --------------------------------------------------

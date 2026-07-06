@@ -76,4 +76,28 @@ export class NotificationService {
       }
     }
   }
+
+  /**
+   * Dispatches custom HTML formatted email directly to the admin
+   */
+  static async sendHtmlEmail(subject: string, htmlContent: string): Promise<boolean> {
+    const transporter = this.getMailTransporter();
+    const adminEmail = process.env.ADMIN_EMAIL;
+
+    if (transporter && adminEmail) {
+      try {
+        await transporter.sendMail({
+          from: `"Mars Algo Platform" <${process.env.SMTP_USER}>`,
+          to: adminEmail,
+          subject,
+          html: htmlContent
+        });
+        console.log("📨 HTML email report successfully delivered.");
+        return true;
+      } catch (err: any) {
+        console.error("❌ Failed to send HTML email report:", err.message);
+      }
+    }
+    return false;
+  }
 }

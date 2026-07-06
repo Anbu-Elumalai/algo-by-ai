@@ -29,6 +29,8 @@ import { RateLimitMiddleware } from "../middlewares/RateLimitMiddleware";
 import { DailyRiskTracker } from "../entity/DailyRiskTracker";
 import { StrategyDecision } from "../entity/StrategyDecision";
 import { RuntimeDailyAudit } from "../entity/RuntimeDailyAudit";
+import { RuntimeStatusReport } from "../entity/RuntimeStatusReport";
+import { ObjectId } from "mongodb";
 
 @JsonController("/trading")
 @UseBefore(RateLimitMiddleware)
@@ -829,15 +831,15 @@ export class TradingController {
   }
 
   /**
-   * Secured: Returns latest daily runtime audit
+   * Secured: Returns latest status report
    */
   @Get("/runtime/latest")
   @UseBefore(AuthMiddleware)
   async getLatestRuntimeAudit(@Res() res: any) {
     try {
-      const auditRepo = AppDataSource.getRepository(RuntimeDailyAudit);
-      const latest = await auditRepo.find({
-        order: { date: "DESC" } as any,
+      const reportRepo = AppDataSource.getRepository(RuntimeStatusReport);
+      const latest = await reportRepo.find({
+        order: { generatedAt: "DESC" } as any,
         take: 1
       });
       return res.status(StatusCodes.OK).json({
@@ -850,15 +852,15 @@ export class TradingController {
   }
 
   /**
-   * Secured: Returns historical daily runtime audits list
+   * Secured: Returns historical daily status reports list
    */
   @Get("/runtime/history")
   @UseBefore(AuthMiddleware)
   async getRuntimeAuditHistory(@Res() res: any) {
     try {
-      const auditRepo = AppDataSource.getRepository(RuntimeDailyAudit);
-      const audits = await auditRepo.find({
-        order: { date: "DESC" } as any
+      const reportRepo = AppDataSource.getRepository(RuntimeStatusReport);
+      const audits = await reportRepo.find({
+        order: { generatedAt: "DESC" } as any
       });
       return res.status(StatusCodes.OK).json({
         success: true,
@@ -870,15 +872,15 @@ export class TradingController {
   }
 
   /**
-   * Secured: Returns daily runtime audit for a specific date
+   * Secured: Returns status report for a specific ID
    */
-  @Get("/runtime/:date")
+  @Get("/runtime/:id")
   @UseBefore(AuthMiddleware)
-  async getRuntimeAuditByDate(@Param("date") dateStr: string, @Res() res: any) {
+  async getRuntimeAuditByDate(@Param("id") idStr: string, @Res() res: any) {
     try {
-      const auditRepo = AppDataSource.getRepository(RuntimeDailyAudit);
-      const audit = await auditRepo.findOne({
-        where: { date: dateStr } as any
+      const reportRepo = AppDataSource.getRepository(RuntimeStatusReport);
+      const audit = await reportRepo.findOne({
+        where: { _id: new ObjectId(idStr) } as any
       });
       return res.status(StatusCodes.OK).json({
         success: true,

@@ -114,6 +114,14 @@ AppDataSource.initialize()
         console.error("⚠️ Failed to initialize Daily Rollover Monitor:", err.message);
       }
 
+      // Start Runtime Status Report Scheduler
+      try {
+        const { RuntimeStatusReportScheduler } = require("./services/RuntimeStatusReportScheduler");
+        RuntimeStatusReportScheduler.start();
+      } catch (err: any) {
+        console.error("⚠️ Failed to initialize Runtime Status Report Scheduler:", err.message);
+      }
+
       // Boot trading bot
       try {
         try {
@@ -141,6 +149,14 @@ AppDataSource.initialize()
         DailyRolloverMonitor.stop();
       } catch (err: any) {
         console.error("❌ Error stopping Daily Rollover Monitor:", err.message);
+      }
+
+      // Stop Runtime Status Report Scheduler
+      try {
+        const { RuntimeStatusReportScheduler } = require("./services/RuntimeStatusReportScheduler");
+        RuntimeStatusReportScheduler.stop();
+      } catch (err: any) {
+        console.error("❌ Error stopping Runtime Status Report Scheduler:", err.message);
       }
 
       // Stop Trading Loop
