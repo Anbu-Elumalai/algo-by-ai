@@ -122,6 +122,14 @@ AppDataSource.initialize()
         console.error("⚠️ Failed to initialize Runtime Status Report Scheduler:", err.message);
       }
 
+      // Start Weekly Strategy Trend Report Scheduler
+      try {
+        const { WeeklyReportScheduler } = require("./services/WeeklyReportScheduler");
+        WeeklyReportScheduler.start();
+      } catch (err: any) {
+        console.error("⚠️ Failed to initialize Weekly Report Scheduler:", err.message);
+      }
+
       // Boot trading bot
       try {
         try {
@@ -157,6 +165,14 @@ AppDataSource.initialize()
         RuntimeStatusReportScheduler.stop();
       } catch (err: any) {
         console.error("❌ Error stopping Runtime Status Report Scheduler:", err.message);
+      }
+
+      // Stop Weekly Strategy Trend Report Scheduler
+      try {
+        const { WeeklyReportScheduler } = require("./services/WeeklyReportScheduler");
+        WeeklyReportScheduler.stop();
+      } catch (err: any) {
+        console.error("❌ Error stopping Weekly Report Scheduler:", err.message);
       }
 
       // Stop Trading Loop

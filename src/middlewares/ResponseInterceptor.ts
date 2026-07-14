@@ -3,7 +3,7 @@ import { Interceptor, InterceptorInterface, Action } from "routing-controllers";
 @Interceptor()
 export class ResponseInterceptor implements InterceptorInterface {
   intercept(action: Action, content: any) {
-    if (action.response.headersSent || (content && content.headersSent)) {
+    if (action.response.headersSent || (content && (content.headersSent || content.constructor?.name === "ServerResponse"))) {
       return content;
     }
     return this.transform(content, new WeakSet());
