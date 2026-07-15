@@ -1,7 +1,27 @@
+jest.mock("nodemailer", () => ({
+  createTransport: jest.fn().mockReturnValue({
+    sendMail: jest.fn().mockResolvedValue({ messageId: "mock-message-id" })
+  })
+}));
+
+jest.mock("axios", () => ({
+  get: jest.fn().mockResolvedValue({
+    data: {
+      data: {
+        candles: [
+          ["2026-07-15T12:00:00Z", 100, 105, 95, 102, 1000]
+        ]
+      }
+    }
+  }),
+  post: jest.fn().mockResolvedValue({ data: { success: true } })
+}));
+
 import { RuntimeStatusReportScheduler } from "../services/RuntimeStatusReportScheduler";
 import { RuntimeStatusReportService } from "../services/RuntimeStatusReportService";
 import { AppDataSource } from "../data-source";
 import { RuntimeStatusReport } from "../entity/RuntimeStatusReport";
+import { PriceEngine } from "../services/PriceEngine";
 
 describe("Runtime Status Report Tests", () => {
   
@@ -12,6 +32,7 @@ describe("Runtime Status Report Tests", () => {
   });
 
   afterAll(async () => {
+    PriceEngine.stop();
     if (AppDataSource.isInitialized) {
       await AppDataSource.destroy();
     }

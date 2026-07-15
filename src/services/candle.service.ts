@@ -265,12 +265,14 @@ export class CandleService {
     const historyCount =
       cache?.data.filter(c => c.t !== live!.t).length || 0;
 
-    console.log(`
+    if (process.env.DEBUG === "true") {
+      console.log(`
 [CANDLE ENGINE]
 ${sym}
 Historical candles: ${historyCount}
 Live candle merged successfully
 `);
+    }
   }
 
   private static mergeLiveCandleIntoHistory(symbol: string, liveCandle: UpstoxBar): void {

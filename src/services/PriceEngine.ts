@@ -30,10 +30,12 @@ export class PriceEngine {
       this.prices.set(sym, ltp);
       this.lastTickTimes.set(sym, Date.now());
 
-      console.log(`[PRICE ENGINE]
+      if (process.env.DEBUG === "true") {
+        console.log(`[PRICE ENGINE]
 ${sym} updated to ₹${ltp.toFixed(2)}
 Age=0ms
 Health=HEALTHY`);
+      }
 
       // Update Live Candle in CandleService
       try {

@@ -26,5 +26,6 @@ export class StrategyDecision {
     reason!: string;
 
   @CreateDateColumn()
+  @Index()
     createdAt!: Date;
 }

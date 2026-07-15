@@ -38,5 +38,6 @@ export class TradeLog {
     portfolioValueAfterTrade?: number; // Snapshot of portfolio value
 
   @CreateDateColumn()
+  @Index()
     createdAt!: Date;
 }

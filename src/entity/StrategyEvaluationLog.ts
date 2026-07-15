@@ -66,5 +66,6 @@ export class StrategyEvaluationLog {
     };
 
   @CreateDateColumn()
+  @Index()
     createdAt!: Date;
 }

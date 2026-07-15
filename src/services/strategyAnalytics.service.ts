@@ -141,11 +141,24 @@ export class StrategyAnalyticsService {
     const now = new Date();
     const cutoffDate = days === "lifetime" ? new Date(0) : new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
 
-    const allTrades = await tradeRepo.find();
-    const filteredTrades = allTrades.filter(t => t.createdAt >= cutoffDate);
+    const filteredTrades = await tradeRepo.find({
+      where: {
+        createdAt: { $gte: cutoffDate }
+      } as any
+    });
 
-    const allEvals = await evalRepo.find();
-    const filteredEvals = allEvals.filter(e => e.createdAt >= cutoffDate);
+    const filteredEvals = await evalRepo.find({
+      where: {
+        createdAt: { $gte: cutoffDate }
+      } as any
+    });
+
+    const targetSymbols = Array.from(new Set(filteredTrades.map(s => s.symbol)));
+    const relevantTrades = targetSymbols.length > 0 ? await tradeRepo.find({
+      where: {
+        symbol: { $in: targetSymbols }
+      } as any
+    }) : [];
 
     // Trade Distribution and Win/Loss by Symbol
     const distributionSymbol: Record<string, { trades: number; wins: number; losses: number; netProfit: number }> = {};
@@ -161,7 +174,7 @@ export class StrategyAnalyticsService {
     const sellTrades = filteredTrades.filter(t => t.action === "SELL");
 
     for (const sell of sellTrades) {
-      const matchBuy = allTrades.find(t => t.symbol === sell.symbol && t.action === "BUY" && t.createdAt < sell.createdAt);
+      const matchBuy = relevantTrades.find(t => t.symbol === sell.symbol && t.action === "BUY" && t.createdAt < sell.createdAt);
       const symbol = sell.symbol;
       if (!distributionSymbol[symbol]) {
         distributionSymbol[symbol] = { trades: 0, wins: 0, losses: 0, netProfit: 0 };
@@ -234,7 +247,7 @@ export class StrategyAnalyticsService {
     // Best/Worst Hours
     const hourPnL: Record<number, number> = {};
     for (const sell of sellTrades) {
-      const matchBuy = allTrades.find(t => t.symbol === sell.symbol && t.action === "BUY" && t.createdAt < sell.createdAt);
+      const matchBuy = relevantTrades.find(t => t.symbol === sell.symbol && t.action === "BUY" && t.createdAt < sell.createdAt);
       if (matchBuy) {
         const pnl = sell.totalAmount - matchBuy.totalAmount - (sell.transactionFees || 40) - (matchBuy.transactionFees || 40);
         const hour = sell.createdAt.getHours();
@@ -312,8 +325,11 @@ export class StrategyAnalyticsService {
 
     const stats = await this.generateRollingAnalytics(30);
 
-    const allEvals = await evalRepo.find();
-    const monthlyEvals = allEvals.filter(e => e.date.substring(0, 7) === monthStr);
+    const monthlyEvals = await evalRepo.find({
+      where: {
+        date: { $regex: `^${monthStr}` }
+      } as any
+    });
     const totalEvaluations = monthlyEvals.length;
     let buySignals = 0;
     let sellSignals = 0;

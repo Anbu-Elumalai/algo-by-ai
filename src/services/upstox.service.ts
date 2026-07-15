@@ -46,16 +46,35 @@ export class UpstoxService {
       const tradeRepo = AppDataSource.getRepository(TradeLog);
       const positionRepo = AppDataSource.getRepository(ActivePosition);
 
-      const logs = await tradeRepo.find();
-      let cash = 100000.0; // Starting capital
-
-      for (const log of logs) {
-        if (log.action === "BUY") {
-          cash -= (log.totalAmount + (log.transactionFees || 40));
-        } else if (log.action === "SELL") {
-          cash += (log.totalAmount - (log.transactionFees || 40));
+      const mongoTradeRepo = AppDataSource.getMongoRepository(TradeLog);
+      const aggResult = await mongoTradeRepo.aggregate([
+        {
+          $group: {
+            _id: null,
+            totalBuy: {
+              $sum: {
+                $cond: [
+                  { $eq: ["$action", "BUY"] },
+                  { $add: ["$totalAmount", { $ifNull: ["$transactionFees", 40] }] },
+                  0
+                ]
+              }
+            },
+            totalSell: {
+              $sum: {
+                $cond: [
+                  { $eq: ["$action", "SELL"] },
+                  { $subtract: ["$totalAmount", { $ifNull: ["$transactionFees", 40] }] },
+                  0
+                ]
+              }
+            }
+          }
         }
-      }
+      ]).toArray();
+
+      const netPnL = aggResult.length > 0 ? (aggResult[0].totalSell - aggResult[0].totalBuy) : 0;
+      const cash = 100000.0 + netPnL;
 
       const openPositions = await positionRepo.find();
       let openValue = 0;

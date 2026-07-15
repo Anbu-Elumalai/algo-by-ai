@@ -2,7 +2,7 @@ import { BoundedTTLCache } from "../middlewares/RateLimitMiddleware";
 import { RiskService } from "../services/risk.service";
 import { SystemHealthMonitor } from "../services/SystemHealthMonitor";
 import { RuntimeAuditService } from "../services/RuntimeAuditService";
-import { StrategyAnalyticsService } from "../services/StrategyAnalyticsService";
+import { StrategyAnalyticsService } from "../services/strategyAnalytics.service";
 import { AuditScheduler } from "../services/AuditScheduler";
 
 // Setup mocks

@@ -78,8 +78,15 @@ export class RuntimeAuditService {
 
     // 2. Fetch all trade logs for this date
     // TypeORM MongoDB handles date checks via createdAt
-    const allTrades = await tradeRepo.find();
-    const dailyTrades = allTrades.filter(t => t.createdAt.toISOString().split("T")[0] === dateStr);
+    const startOfDay = new Date(dateStr);
+    const endOfDay = new Date(dateStr);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const dailyTrades = await tradeRepo.find({
+      where: {
+        createdAt: { $gte: startOfDay, $lte: endOfDay }
+      } as any
+    });
 
     let grossProfit = 0;
     let grossLoss = 0;
@@ -96,9 +103,16 @@ export class RuntimeAuditService {
     const buyTrades = dailyTrades.filter(t => t.action === "BUY");
     const sellTrades = dailyTrades.filter(t => t.action === "SELL");
 
+    const targetSymbols = Array.from(new Set(sellTrades.map(s => s.symbol)));
+    const relevantTrades = targetSymbols.length > 0 ? await tradeRepo.find({
+      where: {
+        symbol: { $in: targetSymbols }
+      } as any
+    }) : [];
+
     for (const sell of sellTrades) {
       // Find matching buy trade before it
-      const matchBuy = allTrades.find(t => t.symbol === sell.symbol && t.action === "BUY" && t.createdAt < sell.createdAt);
+      const matchBuy = relevantTrades.find(t => t.symbol === sell.symbol && t.action === "BUY" && t.createdAt < sell.createdAt);
       if (matchBuy) {
         const pnl = sell.totalAmount - matchBuy.totalAmount - (sell.transactionFees || 40) - (matchBuy.transactionFees || 40);
         netProfit += pnl;

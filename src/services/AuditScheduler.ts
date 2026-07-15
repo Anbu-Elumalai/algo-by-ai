@@ -1,5 +1,5 @@
 import { RuntimeAuditService } from "./RuntimeAuditService";
-import { StrategyAnalyticsService } from "./StrategyAnalyticsService";
+import { StrategyAnalyticsService } from "./strategyAnalytics.service";
 
 export class AuditScheduler {
   private static intervalId: NodeJS.Timeout | null = null;

@@ -180,9 +180,11 @@ export class MarketDataService extends EventEmitter {
   private setupPersistentListeners(wsInstance: WebSocket) {
     wsInstance.on("message", (data: Buffer) => {
       // SECTION 3: RAW WEBSOCKET FRAME AUDIT
-      console.log("📨 RAW FRAME RECEIVED", data.length);
-      const isBuffer = Buffer.isBuffer(data);
-      console.log(`📨 RAW FRAME RECEIVED | Size=${data.length} bytes | Type=${isBuffer ? "Buffer (Binary)" : typeof data} | Hex Preview=${isBuffer ? data.slice(0, 10).toString("hex") : ""}`);
+      if (process.env.DEBUG === "true") {
+        console.log("📨 RAW FRAME RECEIVED", data.length);
+        const isBuffer = Buffer.isBuffer(data);
+        console.log(`📨 RAW FRAME RECEIVED | Size=${data.length} bytes | Type=${isBuffer ? "Buffer (Binary)" : typeof data} | Hex Preview=${isBuffer ? data.slice(0, 10).toString("hex") : ""}`);
+      }
 
       try {
         if (this.feedResponseType) {
